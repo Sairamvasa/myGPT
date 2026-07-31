@@ -1,0 +1,26 @@
+# Secrets
+backend/.env
+
+# Python
+backend/__pycache__/
+*.pyc
+
+# Database
+backend/chat.db
+
+# Uploads
+backend/uploads/
+backend/processed_images/
+
+# Next.js
+mygpt-ui/node_modules/
+mygpt-ui/.next/
+
+# IDE
+.vscode/
+.idea/
+
+venv/
+__pycache__/
+backend/.env
+.env
