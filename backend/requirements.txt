@@ -1,4 +1,11 @@
 fastapi
 uvicorn
-langchain-google-genai
 python-dotenv
+google-genai
+opencv-python
+pymupdf
+sentence-transformers
+faiss-cpu
+numpy
+python-multipart
+Pillow

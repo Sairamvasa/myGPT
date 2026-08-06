@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 
 type Props = {
   role: "user" | "assistant";
@@ -26,12 +27,16 @@ export default function Message({ role, content }: Props) {
           content
         ) : (
           <div className="ai-message">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {content}
-            </ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+>
+    {content}
+</ReactMarkdown>
           </div>
         )}
       </div>
     </div>
   );
 }
+

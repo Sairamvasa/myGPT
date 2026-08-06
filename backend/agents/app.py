@@ -4,8 +4,6 @@ import shutil
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Body
-from vision import analyze_image
-from fastapi.responses import StreamingResponse
 
 
 # other imports
@@ -47,42 +45,50 @@ def new_chat():
         "title": "New Chat"
     }
 
-
 @app.post("/chat")
 def chat(data: ChatRequest):
 
-    history = get_history(data.chat_id)
+    first_message = is_first_message(data.chat_id)
+
+    save_message(
+        data.chat_id,
+        "user",
+        data.message
+    )
+
+    if first_message:
+        title = data.message.strip()
+
+        if len(title) > 40:
+            title = title[:40] + "..."
+
+        update_conversation_title(
+            data.chat_id,
+            title
+        )
 
     context = search_pdf(data.message)
 
     result = agent.run(data.message)
 
-    if isinstance(result, dict):
-
-        answer = ask_gemini(
-            data.message,
-            context=result["context"],
-            history=history
-        )
-
-    elif result is not None:
-
+    if result is not None:
         answer = result
-
     else:
-
         answer = ask_gemini(
             data.message,
-            context=context,
-            history=history
+            context
         )
 
-    save_message(data.chat_id, "user", data.message)
-    save_message(data.chat_id, "assistant", answer)
+    save_message(
+        data.chat_id,
+        "assistant",
+        answer
+    )
 
     return {
-        "answer": answer
+        "response": answer
     }
+
 
 @app.get("/history/{chat_id}")
 def history(chat_id: int):
@@ -235,6 +241,30 @@ async def upload_files(
         "files": results
     }
 
+@app.post("/analyze-image")
+async def analyze_uploaded_image(
+    file: UploadFile = File(...),
+    question: str = Form(...)
+):
+
+    os.makedirs("uploads", exist_ok=True)
+
+    file_path = os.path.join(
+        "uploads",
+        file.filename
+    )
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    answer = analyze_image(
+        file_path,
+        question
+    )
+
+    return {
+        "response": answer
+    }
 
 @app.delete("/conversations/{chat_id}")
 def delete_chat(chat_id: int):
@@ -244,33 +274,3 @@ def delete_chat(chat_id: int):
     return {
         "message": "Conversation deleted successfully"
     }
-
-@app.post("/vision")
-def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image.")):
-
-    os.makedirs("uploads", exist_ok=True)
-
-    file_path = f"uploads/{file.filename}"
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    answer = analyze_image(file_path, prompt)
-
-    return {
-        "answer": answer
-    }
-    
-@app.post("/stream")
-def stream(data: ChatRequest):
-
-    def generate():
-
-        for chunk in stream_gemini(data.message):
-
-            yield chunk
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/plain"
-    )

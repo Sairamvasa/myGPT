@@ -1,6 +1,6 @@
 // Backend API URL
 // PC IPv4 address: 192.168.1.34
-const API_URL = "http://192.168.1.34:8000";
+const API_URL = "http://127.0.0.1:8000";
 
 
 // ==============================
@@ -33,7 +33,7 @@ export async function askAI(
 
   const data = await response.json();
 
-  return data.response;
+  return data.answer;
 }
 
 
@@ -144,24 +144,21 @@ export async function uploadFiles(
 // IMAGE / CAMERA ANALYSIS
 // ==============================
 
+// ==============================
+// IMAGE ANALYSIS
+// ==============================
+
 export async function analyzeImage(
   file: File,
-  question: string
+  prompt: string
 ) {
   const formData = new FormData();
 
-  formData.append(
-    "file",
-    file
-  );
-
-  formData.append(
-    "question",
-    question
-  );
+  formData.append("file", file);
+  formData.append("prompt", prompt);
 
   const response = await fetch(
-    `${API_URL}/analyze-image`,
+    `${API_URL}/vision`,
     {
       method: "POST",
       body: formData,
@@ -169,17 +166,11 @@ export async function analyzeImage(
   );
 
   if (!response.ok) {
-    throw new Error(
-      "Image analysis failed"
-    );
+    throw new Error("Image analysis failed");
   }
 
-  const data =
-    await response.json();
-
-  return data.response;
+  return await response.json();
 }
-
 
 // ==============================
 // DELETE CONVERSATION
@@ -202,4 +193,25 @@ export async function deleteConversation(
   }
 
   return response.json();
+}
+
+export async function streamAI(
+    message: string,
+    chatId: number
+) {
+    const response = await fetch(
+        "http://127.0.0.1:8000/stream",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                message,
+                chat_id: chatId,
+            }),
+        }
+    );
+
+    return response.body;
 }

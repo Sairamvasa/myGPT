@@ -2,14 +2,16 @@
 
 import { useState } from "react";
 import {
-  askAI,
-  uploadFiles,
-  analyzeImage,
+    askAI,
+    uploadFiles,
+    analyzeImage,
+    streamAI,
 } from "@/lib/api";
 
 type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
+    role: "user" | "assistant";
+    content: string;
+    regenerate?: boolean;
 };
 
 type Props = {
@@ -27,10 +29,11 @@ export default function ChatInput({
 }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-
+  const [stopGeneration, setStopGeneration] = useState(false);
   // Multiple files
   const [selectedFiles, setSelectedFiles] =
     useState<File[]>([]);
+    
 
   // --------------------------------
   // SELECT FILES
@@ -183,7 +186,8 @@ export default function ChatInput({
     setSelectedFiles([]);
 
     try {
-      setLoading(true);
+    setStopGeneration(false);
+    setLoading(true);
 
       // =================================
       // MULTIPLE PDFs
@@ -239,21 +243,68 @@ export default function ChatInput({
         // User uploaded PDFs and asked
         // a question at the same time
         if (userText) {
-          const response =
-            await askAI(
-              userText,
-              chatId
-            );
+const stream = await streamAI(
+    userText,
+    chatId
+);
 
-          setMessages(
-            (previous) => [
-              ...previous,
-              {
-                role: "assistant",
-                content: response,
-              },
-            ]
-          );
+if (!stream) {
+    throw new Error("No stream received.");
+}
+
+const reader = stream.getReader();
+
+const decoder = new TextDecoder();
+
+let answer = "";
+
+setMessages((previous) => [
+    ...previous,
+    {
+        role: "assistant",
+        content: "",
+    },
+]);
+
+while (true) {
+
+    if (stopGeneration) {
+
+        reader.cancel();
+
+        break;
+    }
+
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    answer += decoder.decode(value);
+
+    setMessages((previous) => {
+
+        const updated = [...previous];
+
+        updated[updated.length - 1] = {
+            role: "assistant",
+            content: answer + "▌",
+        };
+
+        return updated;
+    });
+
+}
+setMessages((previous) => {
+
+    const updated = [...previous];
+
+    updated[updated.length - 1] = {
+        role: "assistant",
+        content: answer,
+    };
+
+    return updated;
+});
         } else {
           let message =
             `📚 ${successfulCount} of ${totalCount} PDF file(s) processed successfully.`;
@@ -311,22 +362,21 @@ export default function ChatInput({
             imageFile.name
           );
 
-          const response =
-            await analyzeImage(
-              imageFile,
-              question
-            );
+          const result = await analyzeImage(
+    imageFile,
+    question
+);
 
-          setMessages(
-            (previous) => [
-              ...previous,
-              {
-                role: "assistant",
-                content:
-                  `### ${imageFile.name}\n\n${response}`,
-              },
-            ]
-          );
+console.log(result);
+
+setMessages((previous) => [
+    ...previous,
+    {
+        role: "assistant",
+        content:
+            `🖼️ ${imageFile.name}\n\n${result.answer}`,
+    },
+]);
         }
       }
 
@@ -348,21 +398,69 @@ export default function ChatInput({
           ]
         );
 
-        const response =
-          await askAI(
-            userText,
-            chatId
-          );
+        const stream = await streamAI(
+    userText,
+    chatId
+);
 
-        setMessages(
-          (previous) => [
-            ...previous,
-            {
-              role: "assistant",
-              content: response,
-            },
-          ]
-        );
+if (!stream) {
+    throw new Error("No stream received.");
+}
+
+const reader = stream.getReader();
+const decoder = new TextDecoder();
+
+let answer = "";
+
+// Empty assistant message
+setMessages((previous) => [
+    ...previous,
+    
+{
+    role: "assistant",
+    content: answer,
+    regenerate: true,
+},
+]);
+
+while (true) {
+
+    if (stopGeneration) {
+        await reader.cancel();
+        break;
+    }
+
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    answer += decoder.decode(value, { stream: true });
+
+    setMessages((previous) => {
+
+        const updated = [...previous];
+
+        updated[updated.length - 1] = {
+            role: "assistant",
+            content: answer + "▌",
+        };
+
+        return updated;
+    });
+}
+
+// Remove cursor after completion
+setMessages((previous) => {
+
+    const updated = [...previous];
+
+    updated[updated.length - 1] = {
+        role: "assistant",
+        content: answer,
+    };
+
+    return updated;
+});
       }
     } catch (error) {
       console.error(
@@ -417,20 +515,61 @@ export default function ChatInput({
                     {file.name}
                   </span>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      removeFile(
-                        index
-                      )
-                    }
-                    disabled={
-                      loading
-                    }
-                    className="text-gray-300 hover:text-red-400 disabled:opacity-50"
-                  >
-                    ✕
-                  </button>
+{/* SEND BUTTON */}
+
+<button
+    type="button"
+    onClick={sendMessage}
+    disabled={
+        loading ||
+        (
+            !input.trim() &&
+            selectedFiles.length === 0
+        )
+    }
+    className={`
+        px-5
+        py-2
+        rounded-lg
+        font-semibold
+        transition-all
+        duration-200
+
+        ${
+            loading
+                ? "bg-gray-600 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 active:scale-95"
+        }
+
+        text-white
+    `}
+>
+
+    {loading ? (
+
+        <span className="flex items-center gap-2">
+
+            <span className="animate-pulse">
+                🤖
+            </span>
+
+            Thinking...
+
+        </span>
+
+    ) : (
+
+        <span className="flex items-center gap-2">
+
+            <span>🚀</span>
+
+            Send
+
+        </span>
+
+    )}
+
+</button>
                 </div>
               )
             )}
@@ -520,25 +659,30 @@ export default function ChatInput({
         {/* SEND BUTTON */}
 
         <button
-          type="button"
-          onClick={
-            sendMessage
-          }
-          disabled={
-            loading ||
-            (
-              !input.trim() &&
-              selectedFiles.length === 0
-            )
-          }
-          className="bg-blue-600 px-4 py-2 rounded text-white disabled:opacity-50"
-        >
-          {loading
-            ? "Processing..."
-            : "Send"}
-        </button>
+    type="button"
+    onClick={
+        loading
+            ? () => setStopGeneration(true)
+            : sendMessage
+    }
+    disabled={
+        !loading &&
+        !input.trim() &&
+        selectedFiles.length === 0
+    }
+    className={
+        loading
+            ? "bg-red-600 px-4 py-2 rounded text-white"
+            : "bg-blue-600 px-4 py-2 rounded text-white"
+    }
+>
+    {loading ? "⏹ Stop" : "🚀 Send"}
+</button>
 
       </div>
     </div>
   );
+
 }
+
+

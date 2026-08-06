@@ -22,5 +22,8 @@ mygpt-ui/.next/
 
 venv/
 __pycache__/
-backend/.env
+*.pyc
 .env
+chat.db
+uploads/
+processed_images/
