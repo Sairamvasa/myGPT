@@ -1,6 +1,7 @@
 // Backend API URL
 // PC IPv4 address: 192.168.1.34
-const API_URL = "http://127.0.0.1:8000";
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 
 // ==============================
@@ -200,7 +201,7 @@ export async function streamAI(
     chatId: number
 ) {
     const response = await fetch(
-        "http://127.0.0.1:8000/stream",
+        `${API_URL}/stream`,
         {
             method: "POST",
             headers: {
