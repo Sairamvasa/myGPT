@@ -1,91 +1,35 @@
 import os
 import cv2
-from datetime import datetime
+
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
 load_dotenv()
 
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+client = genai.Client(
+    api_key=GEMINI_API_KEY
+)
 
 # ===========================
 # TEXT CHAT
 # ===========================
 
-def ask_gemini(question, context=None, history=None):
-
-    now = datetime.now()
-
-    current_datetime = now.strftime(
-        "%A, %d %B %Y, %I:%M %p"
-    )
-
-    prompt = f"""
-You are MyGPT, a helpful AI assistant.
-
-Current Date & Time:
-{current_datetime}
-
-Always answer clearly and professionally.
-"""
-
-    # Conversation History
-    if history:
-
-        prompt += """
-
-Previous Conversation
----------------------
-"""
-
-        for role, message in history:
-
-            if role == "user":
-                prompt += f"\nUser: {message}"
-            else:
-                prompt += f"\nAssistant: {message}"
-
-        prompt += "\n---------------------\n"
-
-    # PDF Context
-    if context:
-
-        prompt += f"""
-
-DOCUMENT CONTEXT
-----------------
-{context}
-----------------
-
-If the answer exists inside the document,
-use only the document.
-
-Otherwise answer normally.
-"""
-
-    prompt += f"""
-
-User Question:
-
-{question}
-"""
+def ask_gemini(prompt):
 
     try:
-        print("Using model: gemini-3.5-flash")
+        print("Using model: gemini-2.5-flash")
 
         response = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt
         )
 
         return response.text
 
     except Exception as e:
-
         return f"Gemini Error: {str(e)}"
 
 
@@ -203,12 +147,20 @@ def analyze_image(
     
 def stream_gemini(prompt):
 
-    response = client.models.generate_content_stream(
-        model="gemini-3.5-flash",
-        contents=prompt
-    )
+    try:
 
-    for chunk in response:
+        print("Using streaming model: gemini-2.5-flash")
 
-        if chunk.text:
-            yield chunk.text
+        response = client.models.generate_content_stream(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+
+        for chunk in response:
+
+            if chunk.text:
+                yield chunk.text
+
+    except Exception as e:
+
+        yield f"Gemini Error: {str(e)}"

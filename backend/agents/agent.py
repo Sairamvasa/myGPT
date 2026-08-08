@@ -1,42 +1,71 @@
-from agents.memory import remember, recall
+from typer import prompt
+
+from agents.memory_extractor import extract_memories
+from agents.memory_search import search_memories
+from agents.prompt_builder import build_prompt
 from agents.tools import web_search
 from agents.planner import decide
 
+from database import save_memory, get_history
+from rag import search_pdf
+from gemini import ask_gemini
+
+
 class Agent:
-    def run(self, message):
+
+    def run(self, message, chat_id):
+
+        # Decide which tool to use
         action = decide(message)
-        
-        # 1. మెమరీ సేవింగ్ లాజిక్ (My name is... అన్నప్పుడు గుర్తుపెట్టుకోవడానికి)
-        if action == "memory":
-            if "my name is" in message.lower():
-                name = message.split("my name is", 1)[1].strip()
-                remember("name", name)
-                return f"✅ Okay! I'll remember that your name is {name}."
-        
-        # 2. పేరు అడిగినప్పుడు గుర్తుచేసే లాజిక్ (Recall logic)
-        msg = message.lower().strip()
-        if msg in [
-            "who am i?",
-            "who am i",
-            "what is my name?",
-            "what is my name"
-        ]:
-            name = recall("name")
-            if name:
-                return f"Your name is {name}."
-            else:
-                return "I don't know your name yet. Tell me by saying 'My name is ...'."
-        
-        # 3. వెబ్ సెర్చ్ లాజిక్ (Web search block సరిగ్గా ఇండెంట్ చేయబడింది)
+
+        # Save Long-Term Memory
+        facts = extract_memories(message)
+
+        for fact in facts:
+            save_memory(fact)
+
+        if facts:
+            print("Saved Memories:", facts)
+
+        # Load Chat History
+        history = get_history(chat_id)
+
+        # Load Relevant Memories
+        memories = search_memories(message)
+
+        # Load PDF Context
+        context = search_pdf(message)
+
+        # Optional Web Search
         if action == "web":
+
             results = web_search(message)
-            text = ""
+
+            web_context = ""
+
             for item in results:
-                text += f"Title: {item['title']}\nContent: {item['body']}\nSource: {item['link']}\n\n"
-            
-            return {
-                "tool": "web",
-                "context": text
-            }
-            
-        return None
+                web_context += (
+                    f"Title: {item['title']}\n"
+                    f"Content: {item['body']}\n"
+                    f"Source: {item['link']}\n\n"
+                )
+
+            if context:
+                context += "\n\n" + web_context
+            else:
+                context = web_context
+
+        # Build Prompt
+        prompt = build_prompt(
+    question=message,
+    history=history,
+    memories=memories,
+    context=context
+)
+
+        return {
+            "prompt": prompt,
+            "history": history,
+            "context": context,
+            "memories": memories
+}

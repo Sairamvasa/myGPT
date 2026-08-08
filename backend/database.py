@@ -1,7 +1,10 @@
 import sqlite3
 
 
-DB_NAME = "chat.db"
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DB_NAME = str(BASE_DIR / "mygpt.db")
 
 
 def get_connection():
@@ -33,12 +36,21 @@ CREATE TABLE IF NOT EXISTS chats (
 )
 """)
 
-# 👇 ఇక్కడ add చేయండి
+ 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     memory_key TEXT UNIQUE,
     memory_value TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact TEXT NOT NULL,
+    importance INTEGER DEFAULT 3,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
 
@@ -147,21 +159,6 @@ def is_first_message(chat_id):
     return count == 0
 
 
-def save_message(chat_id, role, message):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        INSERT INTO chats(chat_id, role, message)
-        VALUES (?, ?, ?)
-        """,
-        (chat_id, role, message)
-    )
-
-    conn.commit()
-    conn.close()
-
 
 def save_message(chat_id, role, message):
     conn = get_connection()
@@ -230,3 +227,44 @@ def recall_memory(key):
         return row[0]
 
     return None
+
+def save_memory(fact, importance=3):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # ఇప్పటికే అదే memory ఉందో లేదో చూడండి
+    cursor.execute(
+        "SELECT id FROM memories WHERE fact = ?",
+        (fact,)
+    )
+
+    if cursor.fetchone() is None:
+
+        cursor.execute(
+            """
+            INSERT INTO memories(fact, importance)
+            VALUES (?, ?)
+            """,
+            (fact, importance)
+        )
+
+        conn.commit()
+
+    conn.close()
+    
+def get_all_memories():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT fact
+        FROM memories
+        ORDER BY importance DESC, id DESC
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [row[0] for row in rows]

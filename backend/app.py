@@ -3,17 +3,17 @@ import shutil
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Body
-from vision import analyze_image
 from fastapi.responses import StreamingResponse
 
-
-# other imports
+from vision import analyze_image
 from database import *
 from models import *
 from gemini import *
 from rag import *
 from agents.agent import Agent
+
+
+
 agent = Agent()
 
 
@@ -51,39 +51,30 @@ def new_chat():
 @app.post("/chat")
 def chat(data: ChatRequest):
 
-    history = get_history(data.chat_id)
+    result = agent.run(
+        data.message,
+        data.chat_id
+    )
 
-    context = search_pdf(data.message)
+    answer = ask_gemini(
+        result["prompt"]
+    )
 
-    result = agent.run(data.message)
+    save_message(
+        data.chat_id,
+        "user",
+        data.message
+    )
 
-    if isinstance(result, dict):
-
-        answer = ask_gemini(
-            data.message,
-            context=result["context"],
-            history=history
-        )
-
-    elif result is not None:
-
-        answer = result
-
-    else:
-
-        answer = ask_gemini(
-            data.message,
-            context=context,
-            history=history
-        )
-
-    save_message(data.chat_id, "user", data.message)
-    save_message(data.chat_id, "assistant", answer)
+    save_message(
+        data.chat_id,
+        "assistant",
+        answer
+    )
 
     return {
         "answer": answer
     }
-
 @app.get("/history/{chat_id}")
 def history(chat_id: int):
 
@@ -264,13 +255,57 @@ def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image
 @app.post("/stream")
 def stream(data: ChatRequest):
 
+    result = agent.run(
+        data.message,
+        data.chat_id
+    )
+
+    # If agent returned a direct answer
+    if result.get("answer"):
+
+        def direct_response():
+            yield result["answer"]
+
+        return StreamingResponse(
+            direct_response(),
+            media_type="text/plain"
+        )
+
+    # Final prompt created by Agent
+    prompt = result["prompt"]
+
     def generate():
 
-        for chunk in stream_gemini(data.message):
+        full_answer = ""
 
+        for chunk in stream_gemini(prompt):
+
+            full_answer += chunk
             yield chunk
+
+        # Save messages after streaming completes
+        save_message(
+            data.chat_id,
+            "user",
+            data.message
+        )
+
+        save_message(
+            data.chat_id,
+            "assistant",
+            full_answer
+        )
 
     return StreamingResponse(
         generate(),
         media_type="text/plain"
     )
+    
+@app.get("/memories")
+def memories():
+
+    from database import get_all_memories
+
+    return {
+        "memories": get_all_memories()
+    }
