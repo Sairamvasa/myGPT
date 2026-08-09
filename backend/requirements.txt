@@ -14,3 +14,4 @@ langchain-text-splitters
 langchain-huggingface
 langchain-community
 ddgs
+bcrypt
