@@ -29,6 +29,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://192.168.1.34:3000",
         "https://my-gpt-hazel-six.vercel.app",
+         "https://my-pam24ufo6-sairamvasas-projects.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
