@@ -1,9 +1,18 @@
+import email
 import os
 import shutil
+import bcrypt
 
-from fastapi import FastAPI, UploadFile, File, Form
+from pydantic import BaseModel
+
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
 
 from vision import analyze_image
 from database import *
@@ -12,7 +21,48 @@ from gemini import *
 from rag import *
 from agents.agent import Agent
 
+load_dotenv()
 
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_ALGORITHM = "HS256"
+security = HTTPBearer()
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    token = credentials.credentials
+
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM]
+        )
+
+        user_id = payload.get("user_id")
+
+        if user_id is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+
+        return user_id
+
+    except JWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token"
+        )
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 agent = Agent()
 
@@ -29,7 +79,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://192.168.1.34:3000",
         "https://my-gpt-hazel-six.vercel.app",
-         "https://my-pam24ufo6-sairamvasas-projects.vercel.app",
+        "https://my-pam24ufo6-sairamvasas-projects.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -39,17 +89,69 @@ app.add_middleware(
 def home():
     return {"message": "MyGPT Backend Running 🚀"}
 
-@app.post("/new-chat")
-def new_chat():
 
-    chat_id = create_conversation()
+@app.post("/register")
+def register(data: RegisterRequest):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Check if email already exists
+    cursor.execute(
+        "SELECT id FROM users WHERE email = ?",
+        (data.email,)
+    )
+
+    existing_user = cursor.fetchone()
+
+    if existing_user:
+        conn.close()
+        return {
+            "success": False,
+            "message": "Email already registered"
+        }
+
+    # Hash password
+    password_hash = bcrypt.hashpw(
+        data.password.encode("utf-8"),
+        bcrypt.gensalt()
+    ).decode("utf-8")
+
+    # Save user
+    cursor.execute(
+        """
+        INSERT INTO users(name, email, password_hash)
+        VALUES (?, ?, ?)
+        """,
+        (
+            data.name,
+            data.email,
+            password_hash
+        )
+    )
+
+    user_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "message": "User registered successfully",
+        "user_id": user_id
+    }
+
+
+
+@app.post("/new-chat")
+def new_chat(user_id: int = Depends(get_current_user)):
+
+    chat_id = create_conversation(user_id)
 
     return {
         "chat_id": chat_id,
         "title": "New Chat"
-    }
-
-
+    } 
 @app.post("/chat")
 def chat(data: ChatRequest):
 
@@ -310,4 +412,80 @@ def memories():
 
     return {
         "memories": get_all_memories()
+    }
+@app.get("/memories")
+def memories():
+
+    from database import get_all_memories
+
+    return {
+        "memories": get_all_memories()
+    }
+
+
+@app.post("/login")
+def login(data: LoginRequest):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, name, email, password_hash FROM users WHERE email = ?",
+        (data.email,)
+    )
+
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        return {
+            "success": False,
+            "message": "Invalid email or password"
+        }
+
+    user_id, name, email, password_hash = user
+
+    password_valid = bcrypt.checkpw(
+        data.password.encode("utf-8"),
+        password_hash.encode("utf-8")
+    )
+
+    if not password_valid:
+        return {
+            "success": False,
+            "message": "Invalid email or password"
+        }
+
+    token_data = {
+        "user_id": user_id,
+        "email": email,
+        "exp": datetime.utcnow() + timedelta(days=7)
+    }
+
+    access_token = jwt.encode(
+        token_data,
+        JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM
+    )
+
+    return {
+        "success": True,
+        "message": "Login successful",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": user_id,
+        "name": name,
+        "email": email
+    }
+
+
+@app.get("/me")
+def get_me(authorization: str = Header(None)):
+
+    user_id = get_current_user(authorization)
+
+    return {
+        "success": True,
+        "message": "Token is valid",
+        "user_id": user_id
     }

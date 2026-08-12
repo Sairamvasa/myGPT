@@ -27,3 +27,5 @@ __pycache__/
 chat.db
 uploads/
 processed_images/
+.vercel
+.env*

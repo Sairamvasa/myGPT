@@ -1,6 +1,4 @@
 import sqlite3
-
-
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -15,9 +13,36 @@ def get_connection():
     return conn
 
 
+# ==============================
+# USERS TABLE
+# ==============================
+
+# ==============================
+# USERS TABLE
+# ==============================
+
+conn = get_connection()
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+
+conn.commit()
+conn.close()
+
 # Create tables
 conn = get_connection()
 cursor = conn.cursor()
+
+# existing conversations table...
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS conversations (
@@ -25,6 +50,21 @@ CREATE TABLE IF NOT EXISTS conversations (
     title TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
+""")
+
+# Add user_id to existing conversations table
+try:
+    cursor.execute(
+        "ALTER TABLE conversations ADD COLUMN user_id INTEGER"
+    )
+except sqlite3.OperationalError:
+    pass
+
+# Assign existing conversations to user 1
+cursor.execute("""
+    UPDATE conversations
+    SET user_id = 1
+    WHERE user_id IS NULL
 """)
 
 cursor.execute("""
@@ -35,6 +75,7 @@ CREATE TABLE IF NOT EXISTS chats (
     message TEXT
 )
 """)
+
 
  
 cursor.execute("""
@@ -58,13 +99,16 @@ conn.commit()
 conn.close()
 
 
-def create_conversation(title="New Chat"):
+def create_conversation(user_id, title="New Chat"):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute(
-        "INSERT INTO conversations(title) VALUES (?)",
-        (title,)
+        """
+        INSERT INTO conversations(user_id, title)
+        VALUES (?, ?)
+        """,
+        (user_id, title)
     )
 
     chat_id = cursor.lastrowid
@@ -88,15 +132,16 @@ def update_conversation_title(chat_id, title):
     conn.close()
 
 
-def get_conversations():
+def get_conversations(user_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT id, title
         FROM conversations
+        WHERE user_id = ?
         ORDER BY id DESC
-    """)
+    """, (user_id,))
 
     rows = cursor.fetchall()
 

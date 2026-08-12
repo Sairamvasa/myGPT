@@ -1,9 +1,105 @@
 // Backend API URL
 // PC IPv4 address: 192.168.1.34
 const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://mygpt-production-97da.up.railway.app";
 
 
+  // ==============================
+// AUTH
+// ==============================
+
+export async function registerUser(
+  name: string,
+  email: string,
+  password: string
+) {
+  const response = await fetch(`${API_URL}/register`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name,
+      email,
+      password,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Registration failed");
+  }
+
+  return data;
+}
+
+
+export async function loginUser(
+  email: string,
+  password: string
+) {
+  const response = await fetch(`${API_URL}/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      email,
+      password,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Login failed");
+  }
+
+  // Save JWT token
+  localStorage.setItem("access_token", data.access_token);
+
+  // Save user information
+  localStorage.setItem(
+    "user",
+    JSON.stringify({
+      user_id: data.user_id,
+      name: data.name,
+      email: data.email,
+    })
+  );
+
+  return data;
+}
+
+
+export function logoutUser() {
+  localStorage.removeItem("access_token");
+  localStorage.removeItem("user");
+}
+
+
+export function getToken() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return localStorage.getItem("access_token");
+}
+
+function authHeaders() {
+  const token = getToken();
+
+  return {
+    "Content-Type": "application/json",
+    ...(token
+      ? {
+          Authorization: `Bearer ${token}`,
+        }
+      : {}),
+  };
+}
 // ==============================
 // ASK AI
 // ==============================
@@ -12,24 +108,17 @@ export async function askAI(
   message: string,
   chat_id: number
 ) {
-  const response = await fetch(
-    `${API_URL}/chat`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        message,
-        chat_id,
-      }),
-    }
-  );
+  const response = await fetch(`${API_URL}/chat`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({
+      message,
+      chat_id,
+    }),
+  });
 
   if (!response.ok) {
-    throw new Error(
-      "Failed to get AI response"
-    );
+    throw new Error("Failed to get AI response");
   }
 
   const data = await response.json();
@@ -42,17 +131,16 @@ export async function askAI(
 // GET CHAT HISTORY
 // ==============================
 
-export async function getHistory(
-  chatId: number
-) {
+export async function getHistory(chatId: number) {
   const response = await fetch(
-    `${API_URL}/history/${chatId}`
+    `${API_URL}/history/${chatId}`,
+    {
+      headers: authHeaders(),
+    }
   );
 
   if (!response.ok) {
-    throw new Error(
-      "Failed to load history"
-    );
+    throw new Error("Failed to load history");
   }
 
   return response.json();
@@ -64,14 +152,12 @@ export async function getHistory(
 // ==============================
 
 export async function getConversations() {
-  const response = await fetch(
-    `${API_URL}/conversations`
-  );
+  const response = await fetch(`${API_URL}/conversations`, {
+    headers: authHeaders(),
+  });
 
   if (!response.ok) {
-    throw new Error(
-      "Failed to load conversations"
-    );
+    throw new Error("Failed to load conversations");
   }
 
   return response.json();
@@ -83,17 +169,13 @@ export async function getConversations() {
 // ==============================
 
 export async function createNewChat() {
-  const response = await fetch(
-    `${API_URL}/new-chat`,
-    {
-      method: "POST",
-    }
-  );
+  const response = await fetch(`${API_URL}/new-chat`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
 
   if (!response.ok) {
-    throw new Error(
-      "Failed to create chat"
-    );
+    throw new Error("Failed to create chat");
   }
 
   return response.json();
@@ -128,6 +210,7 @@ export async function uploadFiles(
     {
       method: "POST",
       body: formData,
+      headers: authHeaders(),
     }
   );
 
@@ -184,13 +267,12 @@ export async function deleteConversation(
     `${API_URL}/conversations/${chatId}`,
     {
       method: "DELETE",
+      headers: authHeaders(),
     }
   );
 
   if (!response.ok) {
-    throw new Error(
-      "Failed to delete conversation"
-    );
+    throw new Error("Failed to delete conversation");
   }
 
   return response.json();
