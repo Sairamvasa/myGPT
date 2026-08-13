@@ -12,7 +12,7 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
+from fastapi import Security
 
 from vision import analyze_image
 from database import *
@@ -27,10 +27,21 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    token = credentials.credentials
+def get_current_user(credentials):
+
+    if isinstance(credentials, str):
+        token = credentials
+        if token.lower().startswith("bearer "):
+            token = token[7:]
+    else:
+        def get_current_user(credentials):
+
+    if isinstance(credentials, str):
+        token = credentials
+        if token.lower().startswith("bearer "):
+            token = token[7:]
+    else:
+        token = credentials.credentials
 
     try:
         payload = jwt.decode(
@@ -55,6 +66,28 @@ def get_current_user(
             detail="Invalid or expired token"
         )
 
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM]
+        )
+
+        user_id = payload.get("user_id")
+
+        if user_id is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+
+        return user_id
+
+    except JWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token"
+        )
 class RegisterRequest(BaseModel):
     name: str
     email: str
@@ -480,9 +513,12 @@ def login(data: LoginRequest):
 
 
 @app.get("/me")
-def get_me(authorization: str = Header(None)):
+def get_me(
+    credentials: HTTPAuthorizationCredentials = Security(security)
+):
+    token = credentials.credentials
 
-    user_id = get_current_user(authorization)
+    user_id = get_current_user("Bearer " + token)
 
     return {
         "success": True,
