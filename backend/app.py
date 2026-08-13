@@ -31,40 +31,11 @@ def get_current_user(credentials):
 
     if isinstance(credentials, str):
         token = credentials
-        if token.lower().startswith("bearer "):
-            token = token[7:]
-    else:
-        def get_current_user(credentials):
 
-    if isinstance(credentials, str):
-        token = credentials
         if token.lower().startswith("bearer "):
             token = token[7:]
     else:
         token = credentials.credentials
-
-    try:
-        payload = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM]
-        )
-
-        user_id = payload.get("user_id")
-
-        if user_id is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token"
-            )
-
-        return user_id
-
-    except JWTError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
 
     try:
         payload = jwt.decode(
