@@ -27,15 +27,10 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
-def get_current_user(credentials):
-
-    if isinstance(credentials, str):
-        token = credentials
-
-        if token.lower().startswith("bearer "):
-            token = token[7:]
-    else:
-        token = credentials.credentials
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Security(security)
+):
+    token = credentials.credentials
 
     try:
         payload = jwt.decode(
@@ -148,16 +143,16 @@ def register(data: RegisterRequest):
 
 
 @app.post("/new-chat")
-def new_chat(authorization: str = Header(None)):
-    user_id = get_current_user(authorization)
+def new_chat(user_id: int = Depends(get_current_user)):
 
-    chat_id = create_conversation("New Chat", user_id)
+    chat_id = create_conversation(user_id, "New Chat")
 
     return {
         "chat_id": chat_id,
         "title": "New Chat",
         "user_id": user_id
     }
+    
 @app.post("/chat")
 def chat(data: ChatRequest):
 
@@ -486,12 +481,7 @@ def login(data: LoginRequest):
 
 
 @app.get("/me")
-def get_me(
-    credentials: HTTPAuthorizationCredentials = Security(security)
-):
-    token = credentials.credentials
-
-    user_id = get_current_user("Bearer " + token)
+def get_me(user_id: int = Depends(get_current_user)):
 
     return {
         "success": True,
