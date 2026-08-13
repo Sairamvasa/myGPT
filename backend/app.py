@@ -148,14 +148,16 @@ def register(data: RegisterRequest):
 
 
 @app.post("/new-chat")
-def new_chat(user_id: int = Depends(get_current_user)):
+def new_chat(authorization: str = Header(None)):
+    user_id = get_current_user(authorization)
 
-    chat_id = create_conversation(user_id)
+    chat_id = create_conversation("New Chat", user_id)
 
     return {
         "chat_id": chat_id,
-        "title": "New Chat"
-    } 
+        "title": "New Chat",
+        "user_id": user_id
+    }
 @app.post("/chat")
 def chat(data: ChatRequest):
 
