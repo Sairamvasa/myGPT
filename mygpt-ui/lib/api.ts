@@ -28,8 +28,8 @@ export async function registerUser(
 
   const data = await response.json();
 
-  if (!response.ok) {
-    throw new Error(data.detail || "Registration failed");
+  if (!response.ok || data.success === false) {
+    throw new Error(data.message || data.detail || "Registration failed");
   }
 
   return data;
@@ -53,8 +53,8 @@ export async function loginUser(
 
   const data = await response.json();
 
-  if (!response.ok) {
-    throw new Error(data.detail || "Login failed");
+  if (!response.ok || data.success === false) {
+    throw new Error(data.message || data.detail || "Login failed");
   }
 
   // Save JWT token

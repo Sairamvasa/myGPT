@@ -23,7 +23,7 @@ from agents.agent import Agent
 
 load_dotenv()
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "mygpt-super-secure-jwt-secret-key-2026")
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
@@ -80,6 +80,7 @@ app.add_middleware(
         "https://my-gpt-hazel-six.vercel.app",
         "https://my-pam24ufo6-sairamvasas-projects.vercel.app",
     ],
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,54 +92,59 @@ def home():
 
 @app.post("/register")
 def register(data: RegisterRequest):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    conn = get_connection()
-    cursor = conn.cursor()
+        # Check if email already exists
+        cursor.execute(
+            "SELECT id FROM users WHERE email = ?",
+            (data.email,)
+        )
 
-    # Check if email already exists
-    cursor.execute(
-        "SELECT id FROM users WHERE email = ?",
-        (data.email,)
-    )
+        existing_user = cursor.fetchone()
 
-    existing_user = cursor.fetchone()
+        if existing_user:
+            conn.close()
+            return {
+                "success": False,
+                "message": "Email already registered"
+            }
 
-    if existing_user:
+        # Hash password
+        password_hash = bcrypt.hashpw(
+            data.password.encode("utf-8"),
+            bcrypt.gensalt()
+        ).decode("utf-8")
+
+        # Save user
+        cursor.execute(
+            """
+            INSERT INTO users(name, email, password_hash)
+            VALUES (?, ?, ?)
+            """,
+            (
+                data.name,
+                data.email,
+                password_hash
+            )
+        )
+
+        user_id = cursor.lastrowid
+
+        conn.commit()
         conn.close()
+
+        return {
+            "success": True,
+            "message": "User registered successfully",
+            "user_id": user_id
+        }
+    except Exception as e:
         return {
             "success": False,
-            "message": "Email already registered"
+            "message": f"Registration failed: {str(e)}"
         }
-
-    # Hash password
-    password_hash = bcrypt.hashpw(
-        data.password.encode("utf-8"),
-        bcrypt.gensalt()
-    ).decode("utf-8")
-
-    # Save user
-    cursor.execute(
-        """
-        INSERT INTO users(name, email, password_hash)
-        VALUES (?, ?, ?)
-        """,
-        (
-            data.name,
-            data.email,
-            password_hash
-        )
-    )
-
-    user_id = cursor.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "success": True,
-        "message": "User registered successfully",
-        "user_id": user_id
-    }
 
 
 
