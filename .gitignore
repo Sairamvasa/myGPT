@@ -7,6 +7,8 @@ backend/__pycache__/
 
 # Database
 backend/chat.db
+backend/mygpt.db
+*.db
 
 # Uploads
 backend/uploads/

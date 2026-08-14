@@ -218,9 +218,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         "chunks": chunks
     }
 @app.get("/conversations")
-def conversations():
+def conversations(user_id: int = Depends(get_current_user)):
 
-    chats = get_conversations()
+    chats = get_conversations(user_id)
 
     return [
         {
@@ -406,14 +406,6 @@ def stream(data: ChatRequest):
         media_type="text/plain"
     )
     
-@app.get("/memories")
-def memories():
-
-    from database import get_all_memories
-
-    return {
-        "memories": get_all_memories()
-    }
 @app.get("/memories")
 def memories():
 

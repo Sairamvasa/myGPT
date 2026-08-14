@@ -1,57 +1,41 @@
 from datetime import datetime
+from agents.prompts import SYSTEM_PROMPT
 
 
-def build_prompt(question, history=None, memories=None, context=None):
+def build_prompt(question: str, history=None, memories=None, context=None, tool_results=None):
+    """
+    Build a comprehensive, structured prompt for Gemini including System instructions,
+    long-term memory, conversation history, document/tool context, and user question.
+    """
+    now = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
 
-    now = datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
+    sections = [
+        SYSTEM_PROMPT,
+        f"\n**Environment Metadata**:\n- Current Date & Time: {now}\n"
+    ]
 
-    prompt = f"""
-You are MyGPT, an intelligent AI assistant.
-
-Rules:
-- Use LONG TERM MEMORY whenever it is relevant.
-- Use CHAT HISTORY to continue the conversation naturally.
-- Use DOCUMENT CONTEXT only when relevant.
-- If the answer is in memory, prefer memory over guessing.
-- Never contradict saved memories.
-- If you don't know something, say you don't know.
-
-Current Date & Time:
-{now}
-"""
-
-    # Long-Term Memory
+    # Long-Term Memories
     if memories:
-        prompt += "\n\nLONG TERM MEMORY\n----------------\n"
-        for memory in memories:
-            prompt += f"- {memory}\n"
+        memory_lines = "\n".join([f"- {mem}" for mem in memories])
+        sections.append(f"### 🧠 Long-Term User Memory\n{memory_lines}\n")
 
-    # Chat History
+    # Conversation History
     if history:
-        prompt += "\n\nCHAT HISTORY\n------------\n"
+        history_text = ""
         for role, message in history:
-            if role == "user":
-                prompt += f"User: {message}\n"
-            else:
-                prompt += f"Assistant: {message}\n"
+            role_label = "User" if role == "user" else "Assistant"
+            history_text += f"**{role_label}**: {message}\n\n"
+        sections.append(f"### 💬 Recent Conversation History\n{history_text.strip()}\n")
 
-    # PDF Context
+    # Document Context (RAG)
     if context:
-        prompt += f"""
+        sections.append(f"### 📄 Document & Knowledge Context\n{context}\n")
 
-DOCUMENT CONTEXT
-----------------
-{context}
-"""
+    # Dynamic Tool Outputs (e.g. Python code execution, web search results, time)
+    if tool_results:
+        sections.append(f"### ⚙️ Autonomous Tool Observations\n{tool_results}\n")
 
-    # Current Question
-    prompt += f"""
+    # Current User Question
+    sections.append(f"### 👤 Current User Request\n{question}\n\nPlease provide a helpful, intelligent, and beautifully formatted response.")
 
-USER QUESTION
--------------
-{question}
-
-Answer naturally using the available context.
-"""
-
-    return prompt
+    return "\n\n---\n\n".join(sections)
