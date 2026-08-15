@@ -7,9 +7,9 @@ STOP_WORDS = {
 }
 
 
-def search_memories(question: str):
+def search_memories(question: str, user_id: int):
 
-    memories = get_all_memories()
+    memories = get_all_memories(user_id)
 
     if not memories:
         return []

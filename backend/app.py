@@ -54,6 +54,23 @@ def get_current_user(
             status_code=401,
             detail="Invalid or expired token"
         )
+
+def verify_chat_ownership(chat_id, user_id):
+    """Ensure the conversation belongs to the authenticated user."""
+    owner = get_conversation_owner(chat_id)
+
+    if owner is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found"
+        )
+
+    if owner != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to access this conversation"
+        )
+
 class RegisterRequest(BaseModel):
     name: str
     email: str
@@ -160,11 +177,14 @@ def new_chat(user_id: int = Depends(get_current_user)):
     }
     
 @app.post("/chat")
-def chat(data: ChatRequest):
+def chat(data: ChatRequest, user_id: int = Depends(get_current_user)):
+
+    verify_chat_ownership(data.chat_id, user_id)
 
     result = agent.run(
         data.message,
-        data.chat_id
+        data.chat_id,
+        user_id
     )
 
     answer = ask_gemini(
@@ -187,7 +207,9 @@ def chat(data: ChatRequest):
         "answer": answer
     }
 @app.get("/history/{chat_id}")
-def history(chat_id: int):
+def history(chat_id: int, user_id: int = Depends(get_current_user)):
+
+    verify_chat_ownership(chat_id, user_id)
 
     messages = get_chat_messages(chat_id)
 
@@ -199,7 +221,10 @@ def history(chat_id: int):
         for role, message in messages
     ]
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user)
+):
 
     # Only allow PDF files
     if not file.filename.lower().endswith(".pdf"):
@@ -207,16 +232,18 @@ async def upload_pdf(file: UploadFile = File(...)):
             "error": "Only PDF files are allowed"
         }
 
-    os.makedirs("uploads", exist_ok=True)
+    # Per-user upload directory
+    user_dir = os.path.join("uploads", str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
 
-    file_path = os.path.join("uploads", file.filename)
+    file_path = os.path.join(user_dir, file.filename)
 
-    # Save PDF inside uploads folder
+    # Save PDF inside user's upload folder
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Process PDF using RAG
-    chunks = process_pdf(file_path)
+    # Process PDF using RAG (scoped to this user)
+    chunks = process_pdf(file_path, user_id)
 
     return {
         "message": "PDF uploaded and processed successfully",
@@ -238,7 +265,8 @@ def conversations(user_id: int = Depends(get_current_user)):
 
 @app.post("/upload-files")
 async def upload_files(
-    files: list[UploadFile] = File(...)
+    files: list[UploadFile] = File(...),
+    user_id: int = Depends(get_current_user)
 ):
     print("\n==============================")
     print("TOTAL FILES RECEIVED:", len(files))
@@ -248,7 +276,23 @@ async def upload_files(
     )
     print("==============================\n")
 
-    os.makedirs("uploads", exist_ok=True)
+    # Per-user upload directory
+    user_dir = os.path.join("uploads", str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    # Supported plain-text / code extensions
+    TEXT_EXTENSIONS = {
+        ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".html", ".htm", ".css", ".scss", ".sass",
+        ".json", ".jsonc", ".csv", ".tsv",
+        ".md", ".markdown", ".txt", ".text",
+        ".xml", ".yaml", ".yml", ".toml", ".ini",
+        ".sh", ".bash", ".bat", ".ps1",
+        ".c", ".cpp", ".h", ".java", ".go",
+        ".rs", ".rb", ".php", ".swift", ".kt",
+        ".sql", ".env", ".gitignore", ".dockerfile",
+        ".r", ".m", ".scala", ".lua",
+    }
 
     results = []
 
@@ -263,45 +307,49 @@ async def upload_files(
             file.filename
         )[1].lower()
 
-        if extension != ".pdf":
-            results.append({
-                "filename": file.filename,
-                "status": "skipped",
-                "message": "Not a PDF"
-            })
-            continue
-
         file_path = os.path.join(
-            "uploads",
+            user_dir,
             file.filename
         )
 
         try:
-            # Save PDF
+            # Save file to disk
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(
                     file.file,
                     buffer
                 )
 
-            print(
-                "Saved:",
-                file.filename
-            )
+            print("Saved:", file.filename)
 
-            # Process PDF
-            chunks = process_pdf(file_path)
+            if extension == ".pdf":
+                # Process using RAG PDF pipeline
+                chunks = process_pdf(file_path, user_id)
+                print("Successfully processed PDF:", file.filename)
+                results.append({
+                    "filename": file.filename,
+                    "status": "success",
+                    "type": "pdf",
+                    "chunks": chunks
+                })
 
-            print(
-                "Successfully processed:",
-                file.filename
-            )
+            elif extension in TEXT_EXTENSIONS:
+                # Process as plain text / code file
+                chunks = process_text_file(file_path, user_id)
+                print("Successfully processed text/code file:", file.filename)
+                results.append({
+                    "filename": file.filename,
+                    "status": "success",
+                    "type": "text",
+                    "chunks": chunks
+                })
 
-            results.append({
-                "filename": file.filename,
-                "status": "success",
-                "chunks": chunks
-            })
+            else:
+                results.append({
+                    "filename": file.filename,
+                    "status": "skipped",
+                    "message": f"Unsupported file type: {extension}"
+                })
 
         except Exception as e:
 
@@ -331,7 +379,7 @@ async def upload_files(
 
     return {
         "message":
-            f"{len(successful)} of {len(files)} PDFs processed",
+            f"{len(successful)} of {len(files)} file(s) processed",
         "total": len(files),
         "successful": len(successful),
         "files": results
@@ -339,7 +387,9 @@ async def upload_files(
 
 
 @app.delete("/conversations/{chat_id}")
-def delete_chat(chat_id: int):
+def delete_chat(chat_id: int, user_id: int = Depends(get_current_user)):
+
+    verify_chat_ownership(chat_id, user_id)
 
     delete_conversation(chat_id)
 
@@ -364,11 +414,14 @@ def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image
     }
     
 @app.post("/stream")
-def stream(data: ChatRequest):
+def stream(data: ChatRequest, user_id: int = Depends(get_current_user)):
+
+    verify_chat_ownership(data.chat_id, user_id)
 
     result = agent.run(
         data.message,
-        data.chat_id
+        data.chat_id,
+        user_id
     )
 
     # If agent returned a direct answer
@@ -413,12 +466,12 @@ def stream(data: ChatRequest):
     )
     
 @app.get("/memories")
-def memories():
+def memories(user_id: int = Depends(get_current_user)):
 
     from database import get_all_memories
 
     return {
-        "memories": get_all_memories()
+        "memories": get_all_memories(user_id)
     }
 
 

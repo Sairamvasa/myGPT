@@ -15,7 +15,7 @@ class Agent:
     Orchestrates Memory, RAG, Web Search, Code Interpreter, and LLM reasoning.
     """
 
-    def run(self, message: str, chat_id=None):
+    def run(self, message: str, chat_id=None, user_id=None):
         # 1. Decide action / tools needed
         action = decide(message)
         tool_results = None
@@ -23,15 +23,15 @@ class Agent:
         # 2. Extract and Persist Long-Term User Facts & Preferences
         facts = extract_memories(message)
         for fact in facts:
-            save_memory(fact)
+            save_memory(fact, user_id)
 
         if facts:
             print(f"[Memory] Saved {len(facts)} user fact(s): {facts}")
 
         # 3. Retrieve Contexts
         history = get_history(chat_id) if chat_id is not None else []
-        memories = search_memories(message)
-        context = search_pdf(message)
+        memories = search_memories(message, user_id)
+        context = search_pdf(message, user_id)
 
         # 4. Execute Autonomous Tools Based on Intent
         if action == "web":
@@ -87,4 +87,4 @@ class Agent:
             "memories": memories,
             "action": action,
             "tool_results": tool_results
-        }
+        }

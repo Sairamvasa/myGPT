@@ -106,14 +106,14 @@ function authHeaders() {
 
 export async function askAI(
   message: string,
-  chat_id: number
+  chat_id: number | null
 ) {
   const response = await fetch(`${API_URL}/chat`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({
       message,
-      chat_id,
+      chat_id: chat_id || 1,
     }),
   });
 
@@ -280,18 +280,16 @@ export async function deleteConversation(
 
 export async function streamAI(
     message: string,
-    chatId: number
+    chatId: number | null
 ) {
     const response = await fetch(
         `${API_URL}/stream`,
         {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
+            headers: authHeaders(),
             body: JSON.stringify({
                 message,
-                chat_id: chatId,
+                chat_id: chatId || 1,
             }),
         }
     );

@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS memories (
 )
 """)
 
+# Add user_id to memories table
+try:
+    cursor.execute("ALTER TABLE memories ADD COLUMN user_id INTEGER")
+except sqlite3.OperationalError:
+    pass
+
+# Add user_id to memory table
+try:
+    cursor.execute("ALTER TABLE memory ADD COLUMN user_id INTEGER")
+except sqlite3.OperationalError:
+    pass
+
 conn.commit()
 conn.close()
 
@@ -148,6 +160,23 @@ def get_conversations(user_id):
     conn.close()
 
     return rows
+
+
+def get_conversation_owner(chat_id):
+    """Return the user_id that owns the conversation, or None if it doesn't exist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT user_id FROM conversations WHERE id = ?",
+        (chat_id,)
+    )
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row[0] if row else None
 
 
 def get_chat_messages(chat_id):
@@ -241,28 +270,28 @@ def get_history(chat_id):
 
     return rows
 
-def remember_memory(key, value):
+def remember_memory(key, value, user_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT OR REPLACE INTO memory(memory_key, memory_value)
-        VALUES (?, ?)
-    """, (key, value))
+        INSERT OR REPLACE INTO memory(memory_key, memory_value, user_id)
+        VALUES (?, ?, ?)
+    """, (key, value, user_id))
 
     conn.commit()
     conn.close()
 
 
-def recall_memory(key):
+def recall_memory(key, user_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT memory_value
         FROM memory
-        WHERE memory_key = ?
-    """, (key,))
+        WHERE memory_key = ? AND user_id = ?
+    """, (key, user_id))
 
     row = cursor.fetchone()
 
@@ -273,40 +302,41 @@ def recall_memory(key):
 
     return None
 
-def save_memory(fact, importance=3):
+def save_memory(fact, user_id, importance=3):
 
     conn = get_connection()
     cursor = conn.cursor()
 
-    # ఇప్పటికే అదే memory ఉందో లేదో చూడండి
+    # Check if the same memory already exists for this user
     cursor.execute(
-        "SELECT id FROM memories WHERE fact = ?",
-        (fact,)
+        "SELECT id FROM memories WHERE fact = ? AND user_id = ?",
+        (fact, user_id)
     )
 
     if cursor.fetchone() is None:
 
         cursor.execute(
             """
-            INSERT INTO memories(fact, importance)
-            VALUES (?, ?)
+            INSERT INTO memories(fact, importance, user_id)
+            VALUES (?, ?, ?)
             """,
-            (fact, importance)
+            (fact, importance, user_id)
         )
 
         conn.commit()
 
     conn.close()
     
-def get_all_memories():
+def get_all_memories(user_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT fact
         FROM memories
+        WHERE user_id = ?
         ORDER BY importance DESC, id DESC
-    """)
+    """, (user_id,))
 
     rows = cursor.fetchall()
 

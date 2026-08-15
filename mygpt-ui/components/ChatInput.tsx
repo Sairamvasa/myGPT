@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
     askAI,
     uploadFiles,
     analyzeImage,
     streamAI,
+    createNewChat,
 } from "@/lib/api";
 
 type ChatMessage = {
@@ -19,13 +20,15 @@ type Props = {
   setMessages: React.Dispatch<
     React.SetStateAction<ChatMessage[]>
   >;
-  chatId: number;
+  chatId: number | null;
+  onChatCreated?: (newChatId: number) => void;
 };
 
 export default function ChatInput({
   messages,
   setMessages,
   chatId,
+  onChatCreated,
 }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -33,7 +36,16 @@ export default function ChatInput({
   // Multiple files
   const [selectedFiles, setSelectedFiles] =
     useState<File[]>([]);
-    
+
+  useEffect(() => {
+    const handleQuickPrompt = (e: any) => {
+      if (e.detail) {
+        setInput(e.detail);
+      }
+    };
+    window.addEventListener("mygpt-quick-prompt", handleQuickPrompt);
+    return () => window.removeEventListener("mygpt-quick-prompt", handleQuickPrompt);
+  }, []);
 
   // --------------------------------
   // SELECT FILES
@@ -60,16 +72,49 @@ export default function ChatInput({
       "image/jpeg",
       "image/png",
       "image/webp",
+      // All text / code types — browsers may report these as text/plain
+      // or a specific MIME; we also allow by extension below
+      "text/plain",
+      "text/html",
+      "text/css",
+      "text/javascript",
+      "text/typescript",
+      "text/x-python",
+      "application/javascript",
+      "application/typescript",
+      "application/json",
+      "text/csv",
+      "text/markdown",
+      "text/xml",
+      "application/xml",
+      "text/yaml",
+      "application/x-yaml",
+      "application/x-sh",
     ];
 
-    const validFiles = newFiles.filter(
-      (file) =>
-        allowedTypes.includes(file.type)
-    );
+    // Also allow by file extension for types browsers label as "text/plain"
+    const allowedExtensions = [
+      ".pdf",
+      ".jpg", ".jpeg", ".png", ".webp",
+      ".py", ".js", ".ts", ".tsx", ".jsx",
+      ".html", ".htm", ".css", ".scss", ".sass",
+      ".json", ".jsonc", ".csv", ".tsv",
+      ".md", ".markdown", ".txt",
+      ".xml", ".yaml", ".yml", ".toml", ".ini",
+      ".sh", ".bash", ".bat", ".ps1",
+      ".c", ".cpp", ".h", ".java", ".go",
+      ".rs", ".rb", ".php", ".swift", ".kt",
+      ".sql", ".r", ".scala", ".lua",
+    ];
+
+    const validFiles = newFiles.filter((file) => {
+      const ext = "." + file.name.split(".").pop()?.toLowerCase();
+      return allowedTypes.includes(file.type) || allowedExtensions.includes(ext);
+    });
 
     if (validFiles.length !== newFiles.length) {
       alert(
-        "Only PDF, JPG, JPEG, PNG and WEBP files are supported."
+        "Some files are not supported. Supported types: PDF, images (JPG/PNG/WEBP), and code/text files (py, js, ts, html, css, json, csv, md, txt, etc.)"
       );
     }
 
@@ -186,8 +231,23 @@ export default function ChatInput({
     setSelectedFiles([]);
 
     try {
-    setStopGeneration(false);
-    setLoading(true);
+      setStopGeneration(false);
+      setLoading(true);
+
+      // Auto-create chat if starting from a clean new session
+      let targetChatId = chatId;
+      if (!targetChatId) {
+        try {
+          const newChat = await createNewChat();
+          targetChatId = newChat.chat_id;
+          if (onChatCreated) {
+            onChatCreated(newChat.chat_id);
+          }
+        } catch (err) {
+          console.warn("Could not create chat session on server, using session fallback", err);
+          targetChatId = 1;
+        }
+      }
 
       // =================================
       // MULTIPLE PDFs
@@ -243,10 +303,10 @@ export default function ChatInput({
         // User uploaded PDFs and asked
         // a question at the same time
         if (userText) {
-const stream = await streamAI(
-    userText,
-    chatId
-);
+          const stream = await streamAI(
+            userText,
+            targetChatId
+          );
 
 if (!stream) {
     throw new Error("No stream received.");
@@ -399,9 +459,9 @@ setMessages((previous) => [
         );
 
         const stream = await streamAI(
-    userText,
-    chatId
-);
+          userText,
+          targetChatId
+        );
 
 if (!stream) {
     throw new Error("No stream received.");
@@ -484,7 +544,7 @@ setMessages((previous) => {
   };
 
   return (
-    <div className="p-4 border-t border-gray-700">
+    <div className="p-3 md:p-4 border-t border-gray-700">
 
       {/* SELECTED FILE PREVIEW */}
 
@@ -504,72 +564,25 @@ setMessages((previous) => {
                   className="inline-flex items-center gap-3 bg-gray-700 px-4 py-2 rounded-xl text-white"
                 >
                   <span>
-                    {file.type.startsWith(
-                      "image/"
-                    )
+                    {file.type.startsWith("image/")
                       ? "🖼️"
-                      : "📄"}
+                      : file.name.endsWith(".pdf")
+                      ? "📄"
+                      : "💻"}
                   </span>
 
                   <span className="max-w-[200px] truncate">
                     {file.name}
                   </span>
 
-{/* SEND BUTTON */}
-
-<button
-    type="button"
-    onClick={sendMessage}
-    disabled={
-        loading ||
-        (
-            !input.trim() &&
-            selectedFiles.length === 0
-        )
-    }
-    className={`
-        px-5
-        py-2
-        rounded-lg
-        font-semibold
-        transition-all
-        duration-200
-
-        ${
-            loading
-                ? "bg-gray-600 cursor-not-allowed"
-                : "bg-blue-600 hover:bg-blue-700 active:scale-95"
-        }
-
-        text-white
-    `}
->
-
-    {loading ? (
-
-        <span className="flex items-center gap-2">
-
-            <span className="animate-pulse">
-                🤖
-            </span>
-
-            Thinking...
-
-        </span>
-
-    ) : (
-
-        <span className="flex items-center gap-2">
-
-            <span>🚀</span>
-
-            Send
-
-        </span>
-
-    )}
-
-</button>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(index)}
+                    className="text-gray-400 hover:text-red-400 ml-1 font-bold text-sm px-1"
+                    title="Remove file"
+                  >
+                    ✕
+                  </button>
                 </div>
               )
             )}
@@ -580,7 +593,7 @@ setMessages((previous) => {
 
       {/* INPUT AREA */}
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap sm:flex-nowrap">
 
         {/* FILE BUTTON */}
 
@@ -590,20 +603,16 @@ setMessages((previous) => {
               ? "opacity-50 cursor-not-allowed"
               : "cursor-pointer hover:bg-gray-600"
           }`}
+          title="Attach file (PDF, image, or code file)"
         >
           📎
 
           <input
             type="file"
-            accept=".pdf,.jpg,.jpeg,.png,.webp"
             multiple
-            onChange={
-              handleFileSelect
-            }
+            onChange={handleFileSelect}
             className="hidden"
-            disabled={
-              loading
-            }
+            disabled={loading}
           />
         </label>
 
@@ -632,7 +641,7 @@ setMessages((previous) => {
         {/* TEXT INPUT */}
 
         <input
-          className="flex-1 p-2 rounded bg-gray-800 text-white"
+          className="flex-1 min-w-0 p-2 rounded bg-gray-800 text-white text-sm md:text-base"
           placeholder={
             selectedFiles.length > 0
               ? `Ask something about ${selectedFiles.length} selected file(s)...`

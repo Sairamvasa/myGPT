@@ -163,17 +163,14 @@ export default function Home() {
   // ==============================
 
   async function handleNewChat() {
+    // Immediately set to clean new session
+    setChatId(null);
     try {
       const newChat = await createNewChat();
-
       setChatId(newChat.chat_id);
-
       await loadConversations();
     } catch (error) {
-      console.error(
-        "Failed to create new chat:",
-        error
-      );
+      console.warn("New chat pre-creation deferred to first message:", error);
     }
   }
 
@@ -317,7 +314,7 @@ export default function Home() {
                 className="w-full rounded-lg bg-blue-600 py-3 font-semibold hover:bg-blue-700 disabled:opacity-50"
               >
                 {authLoading
-                  ? "Creating account..."
+                  ? "Registering..."
                   : "Register"}
               </button>
 
@@ -395,7 +392,7 @@ export default function Home() {
   // ==============================
 
   return (
-    <div className="relative flex h-screen">
+    <div className="relative flex h-screen overflow-hidden">
 
       <Sidebar
         conversations={conversations}
@@ -405,12 +402,18 @@ export default function Home() {
         onDeleteChat={handleDeleteChat}
       />
 
-      <ChatWindow chatId={chatId} />
+      <ChatWindow
+        chatId={chatId}
+        onChatCreated={(newId) => {
+          setChatId(newId);
+          loadConversations();
+        }}
+      />
 
       {/* LOGOUT BUTTON */}
       <button
         onClick={handleLogout}
-        className="absolute right-4 top-4 z-50 rounded-lg bg-[#343541] px-4 py-2 text-sm text-white shadow hover:bg-[#444654]"
+        className="absolute right-3 top-3 z-50 rounded-lg bg-[#343541] px-3 py-2 text-sm text-white shadow hover:bg-[#444654]"
       >
         Logout
       </button>
