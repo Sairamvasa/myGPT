@@ -205,12 +205,18 @@ export async function uploadFiles(
     )
   );
 
+  const headers: HeadersInit = {};
+  const token = getToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const response = await fetch(
     `${API_URL}/upload-files`,
     {
       method: "POST",
       body: formData,
-      headers: authHeaders(),
+      headers: headers,
     }
   );
 
