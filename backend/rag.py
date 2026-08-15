@@ -12,13 +12,20 @@ vector_stores = {}
 # Per-user uploaded file names: {user_id: set of filenames}
 uploaded_files_map = {}
 
-# Load local embedding model only once.
-# local_files_only=True uses the cached model without
-# trying to reach HuggingFace (works offline).
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={"local_files_only": True}
-)
+# Lazy load embedding model to prevent startup crashes.
+embeddings = None
+
+def get_embeddings():
+    global embeddings
+    if embeddings is None:
+        # Remove local_files_only=True on Railway so it can download
+        is_railway = "RAILWAY_ENVIRONMENT" in os.environ
+        model_kwargs = {} if is_railway else {"local_files_only": True}
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs=model_kwargs
+        )
+    return embeddings
 
 
 def process_pdf(pdf_path, user_id):
@@ -68,7 +75,7 @@ def process_pdf(pdf_path, user_id):
     if user_id not in vector_stores:
         vector_stores[user_id] = FAISS.from_documents(
             documents,
-            embeddings
+            get_embeddings()
         )
 
     # Second, third, fourth... PDF for this user
@@ -130,7 +137,7 @@ def process_text_file(file_path, user_id):
         raise ValueError(f"Could not split {filename} into chunks")
 
     if user_id not in vector_stores:
-        vector_stores[user_id] = FAISS.from_documents(documents, embeddings)
+        vector_stores[user_id] = FAISS.from_documents(documents, get_embeddings())
     else:
         vector_stores[user_id].add_documents(documents)
 
