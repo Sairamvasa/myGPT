@@ -191,11 +191,12 @@ export default function ChatInput({
       ...selectedFiles
     ];
 
-    const pdfFiles =
+    const documentFiles =
       filesToProcess.filter(
         (file) =>
-          file.type ===
-          "application/pdf"
+          !file.type.startsWith(
+            "image/"
+          )
       );
 
     const imageFiles =
@@ -214,8 +215,8 @@ export default function ChatInput({
     );
 
     console.log(
-      "PDF FILES TO UPLOAD:",
-      pdfFiles.map(
+      "DOCUMENT FILES TO UPLOAD:",
+      documentFiles.map(
         (file) => file.name
       )
     );
@@ -250,16 +251,16 @@ export default function ChatInput({
       }
 
       // =================================
-      // MULTIPLE PDFs
+      // DOCUMENTS (PDFs, TEXT, CODE)
       // =================================
 
-      if (pdfFiles.length > 0) {
+      if (documentFiles.length > 0) {
         setMessages((previous) => [
           ...previous,
           {
             role: "user",
             content:
-              pdfFiles
+              documentFiles
                 .map(
                   (file) =>
                     `📄 ${file.name}`
@@ -272,12 +273,12 @@ export default function ChatInput({
         ]);
 
         console.log(
-          `Uploading ${pdfFiles.length} PDFs...`
+          `Uploading ${documentFiles.length} document(s)...`
         );
 
         const uploadResult =
           await uploadFiles(
-            pdfFiles
+            documentFiles
           );
 
         console.log(
@@ -287,16 +288,16 @@ export default function ChatInput({
 
         const successfulCount =
           uploadResult?.successful ??
-          pdfFiles.length;
+          documentFiles.length;
 
         const totalCount =
           uploadResult?.total ??
-          pdfFiles.length;
+          documentFiles.length;
 
         // If backend reports failure
         if (successfulCount === 0) {
           throw new Error(
-            "Backend could not process any PDF."
+            "Backend could not process any document."
           );
         }
 
@@ -367,17 +368,17 @@ setMessages((previous) => {
 });
         } else {
           let message =
-            `📚 ${successfulCount} of ${totalCount} PDF file(s) processed successfully.`;
+            `📚 ${successfulCount} of ${totalCount} document file(s) processed successfully.`;
 
           if (
             successfulCount <
             totalCount
           ) {
             message +=
-              "\n\n⚠️ Some PDFs could not be processed. Check the backend terminal for details.";
+              "\n\n⚠️ Some documents could not be processed. Check the backend terminal for details.";
           } else {
             message +=
-              "\n\nYou can now ask questions about all uploaded PDFs.";
+              "\n\nYou can now ask questions about all uploaded documents.";
           }
 
           setMessages(
