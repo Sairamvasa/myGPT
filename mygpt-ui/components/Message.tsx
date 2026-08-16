@@ -13,6 +13,18 @@ type Props = {
 export default function Message({ role, content }: Props) {
   const isUser = role === "user";
 
+  const getTextContent = (node: unknown): string => {
+    if (typeof node === "string") return node;
+    if (Array.isArray(node)) return node.map(getTextContent).join("");
+    if (node && typeof node === "object" && "props" in node) {
+      const props = (node as { props?: { children?: unknown } }).props;
+      if (props && props.children !== undefined) {
+        return getTextContent(props.children);
+      }
+    }
+    return "";
+  };
+
   return (
     <div
       className={`mb-4 flex ${
@@ -39,7 +51,7 @@ export default function Message({ role, content }: Props) {
 
                   const isCodeBlock = !!className;
 
-                  const code = String(children).replace(/\n$/, "");
+                  const code = getTextContent(children).replace(/\n$/, "");
 
                   const handleCopy = async () => {
                     await navigator.clipboard.writeText(code);
