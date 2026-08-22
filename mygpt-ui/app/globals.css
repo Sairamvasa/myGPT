@@ -35,6 +35,30 @@ body {
   font-size: 16px;
   line-height: 1.7;
   letter-spacing: 0;
+  overflow-x: auto;
+}
+
+.ai-message table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 14px;
+}
+
+.ai-message th,
+.ai-message td {
+  border: 1px solid #444;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.ai-message th {
+  background: #2a2a2a;
+  font-weight: 600;
+}
+
+.ai-message tr:nth-child(even) {
+  background: #1e1e1e;
 }
 
 .ai-message p {

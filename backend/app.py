@@ -1,4 +1,3 @@
-import email
 import os
 import shutil
 import bcrypt
@@ -18,6 +17,7 @@ from vision import analyze_image
 from database import *
 from models import *
 from gemini import *
+from gemini import GeminiError
 from rag import *
 from agents.agent import Agent
 
@@ -187,9 +187,20 @@ def chat(data: ChatRequest, user_id: int = Depends(get_current_user)):
         user_id
     )
 
-    answer = ask_gemini(
-        result["prompt"]
-    )
+    try:
+        answer = ask_gemini(
+            result["prompt"]
+        )
+    except GeminiError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={
+                "error": True,
+                "code": e.kind,
+                "message": e.user_message,
+                "retry_after_seconds": e.retry_after,
+            },
+        )
 
     save_message(
         data.chat_id,
@@ -303,16 +314,25 @@ async def upload_files(
             file.filename
         )
 
-        extension = os.path.splitext(
-            file.filename
-        )[1].lower()
-
-        file_path = os.path.join(
-            user_dir,
-            file.filename
-        )
-
         try:
+            # Guard: filename must be present
+            if not file.filename:
+                results.append({
+                    "filename": "unknown",
+                    "status": "error",
+                    "message": "File has no filename"
+                })
+                continue
+
+            extension = os.path.splitext(
+                file.filename
+            )[1].lower()
+
+            file_path = os.path.join(
+                user_dir,
+                file.filename
+            )
+
             # Save file to disk
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(
@@ -361,10 +381,11 @@ async def upload_files(
             )
 
             results.append({
-                "filename": file.filename,
+                "filename": file.filename or "unknown",
                 "status": "error",
                 "message": str(e)
             })
+
 
     successful = [
         result
@@ -407,7 +428,18 @@ def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    answer = analyze_image(file_path, prompt)
+    try:
+        answer = analyze_image(file_path, prompt)
+    except GeminiError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={
+                "error": True,
+                "code": e.kind,
+                "message": e.user_message,
+                "retry_after_seconds": e.retry_after,
+            },
+        )
 
     return {
         "answer": answer
@@ -427,6 +459,15 @@ def stream(data: ChatRequest, user_id: int = Depends(get_current_user)):
     # If agent returned a direct answer
     if result.get("answer"):
 
+        # Save immediately for direct responses
+        save_message(data.chat_id, "user", data.message)
+        save_message(data.chat_id, "assistant", result["answer"])
+
+        # Auto-title conversation on first user message
+        if is_first_message(data.chat_id):
+            short_title = data.message[:60].strip()
+            update_conversation_title(data.chat_id, short_title)
+
         def direct_response():
             yield result["answer"]
 
@@ -438,27 +479,49 @@ def stream(data: ChatRequest, user_id: int = Depends(get_current_user)):
     # Final prompt created by Agent
     prompt = result["prompt"]
 
+    # Auto-title conversation on first user message (before streaming starts)
+    first = is_first_message(data.chat_id)
+
     def generate():
 
         full_answer = ""
+        had_error = False
 
-        for chunk in stream_gemini(prompt):
+        try:
+            for chunk in stream_gemini(prompt):
+                full_answer += chunk
+                yield chunk
+        except GeminiError as e:
+            had_error = True
+            yield f"\n\n---\n\n⚠️ {e.user_message}"
+        except Exception as e:
+            had_error = True
+            yield (
+                "\n\n---\n\n⚠️ The AI service is temporarily "
+                "unavailable. Please try again."
+            )
+        finally:
+            # Save messages in finally so they are persisted even if the
+            # client disconnects before streaming finishes.
+            if data.message:
+                save_message(
+                    data.chat_id,
+                    "user",
+                    data.message
+                )
 
-            full_answer += chunk
-            yield chunk
+            # Only persist the assistant reply when we actually produced one.
+            if not had_error and full_answer:
+                save_message(
+                    data.chat_id,
+                    "assistant",
+                    full_answer
+                )
 
-        # Save messages after streaming completes
-        save_message(
-            data.chat_id,
-            "user",
-            data.message
-        )
-
-        save_message(
-            data.chat_id,
-            "assistant",
-            full_answer
-        )
+            # Update conversation title after the first exchange
+            if first and data.message:
+                short_title = data.message[:60].strip()
+                update_conversation_title(data.chat_id, short_title)
 
     return StreamingResponse(
         generate(),

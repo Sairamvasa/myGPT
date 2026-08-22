@@ -16,10 +16,11 @@ def decide(user_message: str):
     if any(kw in message for kw in CODE_KEYWORDS) or re.search(r"```python[\s\S]*?```", user_message):
         return "python"
 
-    # 2. Real-Time Date / Clock / Time
+    # 2. Real-Time Date / Clock / Time (checked BEFORE web to avoid 'today' matching web)
     TIME_KEYWORDS = [
         "what time is it", "current time", "what is today's date", "today's date",
-        "what day is today", "what day is it", "current date"
+        "what day is today", "what day is it", "current date", "what is the date",
+        "what is the time"
     ]
     if any(kw in message for kw in TIME_KEYWORDS):
         return "time"

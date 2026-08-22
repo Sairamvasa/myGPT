@@ -8,6 +8,13 @@ from agents.planner import decide
 from database import save_memory, get_history
 from rag import search_pdf
 
+# Personal markers that indicate the user is sharing information about themselves
+_PERSONAL_MARKERS = re.compile(
+    r"\b(i am|i'm|my name|call me|i live|i work|i study|i like|i prefer|"
+    r"i use|my job|my goal|my project|remember that|keep in mind|please remember)\b",
+    re.IGNORECASE
+)
+
 
 class Agent:
     """
@@ -21,12 +28,15 @@ class Agent:
         tool_results = None
 
         # 2. Extract and Persist Long-Term User Facts & Preferences
-        facts = extract_memories(message)
-        for fact in facts:
-            save_memory(fact, user_id)
+        # Only run when message contains first-person personal markers to
+        # avoid polluting memory with every routine question.
+        if _PERSONAL_MARKERS.search(message):
+            facts = extract_memories(message)
+            for fact in facts:
+                save_memory(fact, user_id)
 
-        if facts:
-            print(f"[Memory] Saved {len(facts)} user fact(s): {facts}")
+            if facts:
+                print(f"[Memory] Saved {len(facts)} user fact(s): {facts}")
 
         # 3. Retrieve Contexts
         history = get_history(chat_id) if chat_id is not None else []
@@ -70,6 +80,14 @@ class Agent:
         elif action == "time":
             current_clock = get_current_time()
             tool_results = f"System Real-Time Clock: {current_clock}"
+
+        elif action == "rag":
+            # Context is already fetched from search_pdf above.
+            # Add a note so the prompt builder knows to emphasize document context.
+            if context:
+                tool_results = "Document context retrieved from uploaded files — answer based on the document content above."
+            else:
+                tool_results = "No uploaded documents found for this user. Ask the user to upload a file first."
 
         # 5. Assemble Structured Context Prompt
         prompt = build_prompt(

@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -46,22 +45,31 @@ export default function Message({ role, content }: Props) {
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
               components={{
-                code({ className, children, ...props }) {
-                  const [copied, setCopied] = useState(false);
-
-                  const isCodeBlock = !!className;
-
+                pre({ children, ...props }) {
                   const code = getTextContent(children).replace(/\n$/, "");
 
-                  const handleCopy = async () => {
-                    await navigator.clipboard.writeText(code);
+                  return (
+                    <div className="relative">
+                      <button
+                        onClick={() => navigator.clipboard.writeText(code)}
+                        className="absolute top-2 right-2 z-10 px-2 py-1 rounded bg-gray-700 text-gray-200 text-xs hover:bg-gray-600 transition"
+                        title="Copy code"
+                        aria-label="Copy code"
+                      >
+                        Copy
+                      </button>
 
-                    setCopied(true);
-
-                    setTimeout(() => {
-                      setCopied(false);
-                    }, 1500);
-                  };
+                      <pre
+                        {...props}
+                        className="bg-gray-900 rounded-lg p-4 pt-10 overflow-x-auto text-sm leading-relaxed"
+                      >
+                        {children}
+                      </pre>
+                    </div>
+                  );
+                },
+                code({ className, children, ...props }) {
+                  const isCodeBlock = !!className;
 
                   if (!isCodeBlock) {
                     return (
@@ -72,20 +80,9 @@ export default function Message({ role, content }: Props) {
                   }
 
                   return (
-                    <div className="relative">
-                      <button
-                        onClick={handleCopy}
-                        className="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-gray-200 text-gray-700 flex items-center justify-center hover:bg-white transition"
-                        title={copied ? "Copied" : "Copy code"}
-                        aria-label="Copy code"
-                      >
-                        {copied ? "✓" : "▣"}
-                      </button>
-
-                      <code className={className} {...props}>
-                        {children}
-                      </code>
-                    </div>
+                    <code className={className} {...props}>
+                      {children}
+                    </code>
                   );
                 },
               }}

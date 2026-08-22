@@ -118,7 +118,17 @@ export async function askAI(
   });
 
   if (!response.ok) {
-    throw new Error("Failed to get AI response");
+    let detail: any = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    const message =
+      detail?.detail?.message ||
+      detail?.message ||
+      "Failed to get AI response";
+    throw new Error(message);
   }
 
   const data = await response.json();
@@ -194,7 +204,8 @@ export async function uploadFiles(
   files.forEach((file) => {
     formData.append(
       "files",
-      file
+      file,
+      file.name
     );
   });
 
@@ -256,7 +267,17 @@ export async function analyzeImage(
   );
 
   if (!response.ok) {
-    throw new Error("Image analysis failed");
+    let detail: any = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    const message =
+      detail?.detail?.message ||
+      detail?.message ||
+      "Image analysis failed";
+    throw new Error(message);
   }
 
   return await response.json();
@@ -299,6 +320,11 @@ export async function streamAI(
             }),
         }
     );
+
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => `HTTP ${response.status}`);
+        throw new Error(`Stream request failed (${response.status}): ${errorText}`);
+    }
 
     return response.body;
 }

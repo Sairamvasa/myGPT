@@ -180,26 +180,31 @@ def search_pdf(
         )
     )
 
-    # Search EACH PDF separately
+    # Fetch a broad pool of results without any filter (FAISS in-memory
+    # does not reliably support metadata filtering via the filter= kwarg).
+    # We then manually filter by source filename in Python.
+    total_needed = chunks_per_pdf * len(uploaded_files)
+    # Fetch at least 50 candidates so we have enough to distribute across files
+    fetch_k = max(total_needed * 4, 50)
+
+    try:
+        all_docs = vector_store.similarity_search(question, k=fetch_k)
+    except Exception as error:
+        print(f"RAG search error: {error}")
+        return None
+
+    # Group results by source filename
+    docs_by_file: dict[str, list] = {}
+    for doc in all_docs:
+        source = doc.metadata.get("source", "")
+        if source not in docs_by_file:
+            docs_by_file[source] = []
+        if len(docs_by_file[source]) < chunks_per_pdf:
+            docs_by_file[source].append(doc)
+
     for filename in sorted(uploaded_files):
 
-        try:
-            documents = (
-                vector_store.similarity_search(
-                    question,
-                    k=chunks_per_pdf,
-                    filter={
-                        "source": filename
-                    }
-                )
-            )
-
-        except Exception as error:
-            print(
-                f"Search error for "
-                f"{filename}: {error}"
-            )
-            continue
+        documents = docs_by_file.get(filename, [])
 
         if not documents:
             continue
@@ -225,6 +230,10 @@ PAGE: {page}
 """
             )
 
+    if len(context_parts) <= 1:
+        # Only the header, no actual content found
+        return None
+
     return "\n\n---\n\n".join(
         context_parts
-    )
+    )

@@ -177,6 +177,10 @@ export default function ChatInput({
       return;
     }
 
+    // Reset stop flag at the very start so a stale 'true' from a previous
+    // cancelled generation can never silently cancel the next message.
+    setStopGeneration(false);
+
     const userText = input.trim();
 
     if (
@@ -232,7 +236,6 @@ export default function ChatInput({
     setSelectedFiles([]);
 
     try {
-      setStopGeneration(false);
       setLoading(true);
 
       // Auto-create chat if starting from a clean new session
@@ -523,19 +526,23 @@ setMessages((previous) => {
     return updated;
 });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(
         "FILE / AI ERROR:",
         error
       );
+
+      const errorMessage =
+        error?.message
+          ? `❌ Error: ${error.message}`
+          : "❌ Unable to process the request. Please try again.";
 
       setMessages(
         (previous) => [
           ...previous,
           {
             role: "assistant",
-            content:
-              "Unable to process the selected file(s). Please check the backend terminal.",
+            content: errorMessage,
           },
         ]
       );
