@@ -1,10 +1,91 @@
 import os
+import re
 
 from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
+
+
+class RecursiveCharacterTextSplitter:
+    def __init__(self, chunk_size=1500, chunk_overlap=200, separators=None):
+        self._chunk_size = chunk_size
+        self._chunk_overlap = chunk_overlap
+        self._separators = separators or ["\n\n", "\n", " ", ""]
+
+    def split_text(self, text: str) -> list[str]:
+        return self._split_text(text, self._separators)
+
+    def _split_text(self, text: str, separators: list[str]) -> list[str]:
+        separator = separators[-1]
+        new_separators = []
+        for i, s in enumerate(separators):
+            if not s:
+                separator = s
+                break
+            if s in text:
+                separator = s
+                new_separators = separators[i + 1:]
+                break
+
+        if separator:
+            splits = text.split(separator)
+        else:
+            splits = list(text)
+        splits = [s for s in splits if s]
+
+        final_chunks = []
+        good_splits = []
+        for s in splits:
+            if len(s) < self._chunk_size:
+                good_splits.append(s)
+            else:
+                if good_splits:
+                    merged = self._merge_splits(good_splits, separator)
+                    final_chunks.extend(merged)
+                    good_splits = []
+                if not new_separators:
+                    final_chunks.append(s)
+                else:
+                    other_info = self._split_text(s, new_separators)
+                    final_chunks.extend(other_info)
+        if good_splits:
+            merged = self._merge_splits(good_splits, separator)
+            final_chunks.extend(merged)
+        return final_chunks
+
+    def _merge_splits(self, splits: list[str], separator: str) -> list[str]:
+        separator_len = len(separator)
+        docs = []
+        current_doc = []
+        total = 0
+        for d in splits:
+            len_ = len(d)
+            if (
+                total + len_ + (separator_len if len(current_doc) > 0 else 0)
+                > self._chunk_size
+            ):
+                if len(current_doc) > 0:
+                    doc = separator.join(current_doc)
+                    if doc:
+                        docs.append(doc)
+                    while (
+                        total > self._chunk_overlap
+                        or (
+                            total + len_ + (separator_len if len(current_doc) > 0 else 0)
+                            > self._chunk_size
+                            and total > 0
+                        )
+                    ):
+                        total -= len(current_doc[0]) + (
+                            separator_len if len(current_doc) > 1 else 0
+                        )
+                        current_doc = current_doc[1:]
+            current_doc.append(d)
+            total += len_ + (separator_len if len(current_doc) > 1 else 0)
+        if current_doc:
+            doc = separator.join(current_doc)
+            if doc:
+                docs.append(doc)
+        return docs
 
 # Per-user vector databases: {user_id: FAISS store}
 vector_stores = {}

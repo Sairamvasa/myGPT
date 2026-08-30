@@ -1,8 +1,9 @@
-// Backend API URL
-// PC IPv4 address: 192.168.1.34
+// Backend API base URL.
+// Uses NEXT_PUBLIC_API_URL in production (Vercel); falls back to the local
+// backend for development.
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
-  "https://mygpt-production-97da.up.railway.app";
+  "http://127.0.0.1:8000";
 
 
   // ==============================
