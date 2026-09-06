@@ -7,7 +7,10 @@ import urllib.parse
 from typing import Optional
 import httpx
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError):
+    sd = None
 
 logger = logging.getLogger("MyGPT.Voice.TTS")
 
@@ -75,6 +78,7 @@ class MultilingualTTS(TTSProvider):
 
     def stop(self) -> None:
         self._stop_requested = True
+    if sd is not None:
         try:
             sd.stop()
         except Exception:
@@ -147,6 +151,10 @@ class MultilingualTTS(TTSProvider):
                         audio_data = audio_data.astype(np.float32) / 32768.0
                     if self._stop_requested:
                         return
+                    if sd is None:
+                        logger.warning("Audio playback unavailable on server.")
+                        return
+
                     sd.play(audio_data, samplerate=sample_rate)
 
                     while sd.get_stream().active:
