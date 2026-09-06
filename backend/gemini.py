@@ -1,16 +1,22 @@
 import os
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY is not configured.")
+        from google import genai
+        _client = genai.Client(api_key=GEMINI_API_KEY)
+    return _client
 
 
 class GeminiError(Exception):
@@ -53,7 +59,6 @@ def _classify_gemini_error(e):
         f"{str(e)}"
     ).lower()
 
-    # Timeout should be checked first, even if provider returns 503
     if any(k in text for k in ("timeout", "timed out", "deadline exceeded")):
         return GeminiError(
             "timeout",
@@ -119,8 +124,6 @@ def _classify_gemini_error(e):
 # ===========================
 
 def preprocess_image(image_path):
-    # Lazy import: only load cv2 when actually processing an image.
-    # Prevents startup crash on Railway if opencv is not installed.
     import cv2
 
     image = cv2.imread(image_path)
@@ -131,9 +134,7 @@ def preprocess_image(image_path):
     h, w = image.shape[:2]
 
     if w > 1600:
-
         scale = 1600 / w
-
         image = cv2.resize(
             image,
             None,
@@ -195,32 +196,26 @@ def analyze_image(
 ):
 
     try:
-
         processed = preprocess_image(
             image_path
         )
 
         with open(processed, "rb") as f:
-
             image_bytes = f.read()
 
+        from google.genai import types
+        client = _get_client()
         response = client.models.generate_content(
-
             model="gemini-2.5-flash",
-
-            contents=[
-
-                types.Part.from_text(
-                    text=question
-                ),
-
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type="image/jpeg"
-                )
-
-            ]
-
+            contents=types.Content(
+                parts=[
+                    types.Part.from_text(text=question),
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/jpeg"
+                    )
+                ]
+            )
         )
 
         text = getattr(response, "text", None)
@@ -231,32 +226,6 @@ def analyze_image(
                 502,
             )
         return text
-
-    except GeminiError:
-        raise
-    except Exception as e:
-
-        raise _classify_gemini_error(e)
-
-
-# ===========================
-# STREAMING (used by /stream)
-# ===========================
-
-def stream_gemini(prompt):
-    """
-    Stream a response from Gemini using Chat.send_message_stream
-    to avoid the AFC deprecation warning from generate_content_stream.
-    Falls back gracefully on any error.
-    """
-    try:
-        print("Using streaming model: gemini-2.5-flash")
-
-        chat = client.chats.create(model="gemini-2.5-flash")
-
-        for chunk in chat.send_message_stream(prompt):
-            if chunk.text:
-                yield chunk.text
 
     except GeminiError:
         raise

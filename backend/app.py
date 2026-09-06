@@ -10,66 +10,18 @@ from fastapi.responses import StreamingResponse
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Security
 
 from vision import analyze_image
 from database import *
 from models import *
-from gemini import *
 from gemini import GeminiError
 from rag import *
 from agents.agent import Agent
+from auth import get_current_user, verify_chat_ownership, JWT_SECRET_KEY, JWT_ALGORITHM
+from llm import ask_llm, stream_llm, LLMError
+from voice_agent.routes import router as voice_router
 
 load_dotenv()
-
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "mygpt-super-secure-jwt-secret-key-2026")
-JWT_ALGORITHM = "HS256"
-security = HTTPBearer()
-
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Security(security)
-):
-    token = credentials.credentials
-
-    try:
-        payload = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM]
-        )
-
-        user_id = payload.get("user_id")
-
-        if user_id is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token"
-            )
-
-        return user_id
-
-    except JWTError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
-
-def verify_chat_ownership(chat_id, user_id):
-    """Ensure the conversation belongs to the authenticated user."""
-    owner = get_conversation_owner(chat_id)
-
-    if owner is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation not found"
-        )
-
-    if owner != user_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Not authorized to access this conversation"
-        )
 
 class RegisterRequest(BaseModel):
     name: str
@@ -188,10 +140,10 @@ def chat(data: ChatRequest, user_id: int = Depends(get_current_user)):
     )
 
     try:
-        answer = ask_gemini(
+        answer = ask_llm(
             result["prompt"]
         )
-    except GeminiError as e:
+    except LLMError as e:
         raise HTTPException(
             status_code=e.status_code,
             detail={
@@ -430,7 +382,7 @@ def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image
 
     try:
         answer = analyze_image(file_path, prompt)
-    except GeminiError as e:
+    except LLMError as e:
         raise HTTPException(
             status_code=e.status_code,
             detail={
@@ -488,10 +440,10 @@ def stream(data: ChatRequest, user_id: int = Depends(get_current_user)):
         had_error = False
 
         try:
-            for chunk in stream_gemini(prompt):
+            for chunk in stream_llm(prompt):
                 full_answer += chunk
                 yield chunk
-        except GeminiError as e:
+        except LLMError as e:
             had_error = True
             yield f"\n\n---\n\n⚠️ {e.user_message}"
         except Exception as e:
@@ -602,3 +554,5 @@ def get_me(user_id: int = Depends(get_current_user)):
         "message": "Token is valid",
         "user_id": user_id
     }
+
+app.include_router(voice_router)

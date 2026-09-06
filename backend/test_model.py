@@ -1,14 +1,18 @@
-from google import genai
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+from gemini import _get_client
 
-response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents="Say Hello"
-)
-
-print(response.text)
+try:
+    client = _get_client()
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents="Say Hello"
+    )
+    print(response.text)
+except RuntimeError as e:
+    print(f"Gemini not configured: {e}")
+except Exception as e:
+    print(f"Gemini error: {e}")

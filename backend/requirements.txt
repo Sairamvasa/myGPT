@@ -16,3 +16,12 @@ langchain-community
 ddgs
 bcrypt
 python-jose[cryptography]
+pydantic-settings
+httpx
+sounddevice
+faster-whisper
+pyttsx3
+beautifulsoup4
+gtts
+av
+ollama

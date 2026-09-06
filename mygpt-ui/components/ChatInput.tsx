@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
     askAI,
     uploadFiles,
     analyzeImage,
     streamAI,
     createNewChat,
+    sendVoiceMessage,
+    VoiceResponse,
 } from "@/lib/api";
 
 type ChatMessage = {
@@ -37,16 +39,45 @@ export default function ChatInput({
   const [selectedFiles, setSelectedFiles] =
     useState<File[]>([]);
 
+  // Voice state
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voicePermissionError, setVoicePermissionError] = useState<string | null>(null);
+  const [voiceUnsupportedError, setVoiceUnsupportedError] = useState<string | null>(null);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speakingChatIdRef = useRef<number | null>(null);
+
   useEffect(() => {
-    const handleQuickPrompt = (e: any) => {
-      if (e.detail) {
-        setInput(e.detail);
+    const handleQuickPrompt = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail) {
+        setInput(detail);
       }
     };
     window.addEventListener("mygpt-quick-prompt", handleQuickPrompt);
     return () => window.removeEventListener("mygpt-quick-prompt", handleQuickPrompt);
   }, []);
 
+  // Cleanup recording/audio on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
+    };
+  }, []);
+
+  // --------------------------------
+  // SEND MESSAGE
   // --------------------------------
   // SELECT FILES
   // --------------------------------
@@ -169,12 +200,206 @@ export default function ChatInput({
   };
 
   // --------------------------------
+  // VOICE: AUDIO PLAYBACK
+  // --------------------------------
+
+  const stopAudioPlayback = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+    setIsSpeaking(false);
+    speakingChatIdRef.current = null;
+  };
+
+  const playAudioBase64 = (base64: string, currentChatId: number | null) => {
+    if (!base64) return;
+
+    stopAudioPlayback();
+
+    const audio = new Audio(`data:audio/mpeg;base64,${base64}`);
+    audioRef.current = audio;
+    speakingChatIdRef.current = currentChatId;
+    setIsSpeaking(true);
+
+    audio.play().catch((err) => {
+      console.error("Audio playback failed:", err);
+      stopAudioPlayback();
+    });
+
+    audio.onended = () => {
+      stopAudioPlayback();
+    };
+
+    audio.onerror = () => {
+      console.error("Audio playback error");
+      stopAudioPlayback();
+    };
+  };
+
+  // --------------------------------
+  // VOICE: RECORDING
+  // --------------------------------
+
+  const startRecording = async () => {
+    setVoiceError(null);
+    setVoicePermissionError(null);
+    setVoiceUnsupportedError(null);
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const msg = "Your browser does not support microphone recording.";
+      setVoiceUnsupportedError(msg);
+      alert(msg);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      // Prefer webm; fall back to browser default
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "";
+
+      const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType || "audio/webm" });
+
+        if (audioBlob.size < 4000) {
+          setVoiceError("Audio too short. Please speak for at least half a second.");
+          setIsRecording(false);
+          return;
+        }
+
+        await processVoiceAudio(audioBlob);
+      };
+
+      mediaRecorder.onerror = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        setIsRecording(false);
+        setVoiceError("Recording failed. Please try again.");
+      };
+
+      mediaRecorder.start(250);
+      setIsRecording(true);
+    } catch (err: unknown) {
+      console.error("Microphone error:", err);
+
+      if (err instanceof Error) {
+        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          const msg = "Microphone access was denied. Please allow microphone access in your browser settings and try again.";
+          setVoicePermissionError(msg);
+          alert(msg);
+        } else if (err.name === "NotFoundError") {
+          const msg = "No microphone found. Please connect a microphone and try again.";
+          setVoiceError(msg);
+          alert(msg);
+        } else {
+          const msg = "Could not access microphone. Please check your device and try again.";
+          setVoiceError(msg);
+          alert(msg);
+        }
+      } else {
+        const msg = "Could not access microphone. Please check your device and try again.";
+        setVoiceError(msg);
+        alert(msg);
+      }
+
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      mediaRecorderRef.current.stop();
+    } else {
+      setIsRecording(false);
+    }
+  };
+
+  const processVoiceAudio = async (audioBlob: Blob) => {
+    setIsProcessingVoice(true);
+    setIsRecording(false);
+
+    try {
+      let targetChatId = chatId;
+      if (!targetChatId) {
+        try {
+          const newChat = await createNewChat();
+          targetChatId = newChat.chat_id;
+          if (onChatCreated) {
+            onChatCreated(newChat.chat_id);
+          }
+        } catch (err) {
+          console.warn("Could not create chat session on server, using session fallback", err);
+          targetChatId = 1;
+        }
+      }
+
+      const result: VoiceResponse = await sendVoiceMessage(audioBlob, targetChatId, "auto", true);
+
+      const userText = (result.user_text || "").trim();
+      const assistantText = (result.response || "").trim();
+
+      if (userText) {
+        setMessages((previous) => [
+          ...previous,
+          { role: "user", content: userText },
+        ]);
+      }
+
+      if (assistantText) {
+        setMessages((previous) => [
+          ...previous,
+          { role: "assistant", content: assistantText },
+        ]);
+      }
+
+      if (result.audio_base64 && result.audio_format === "mp3") {
+        playAudioBase64(result.audio_base64, result.chat_id ?? targetChatId);
+      }
+    } catch (err: unknown) {
+      console.error("Voice processing failed:", err);
+      const message = err instanceof Error ? err.message : "Voice processing failed. Please try again.";
+      setVoiceError(message);
+    } finally {
+      setIsProcessingVoice(false);
+    }
+  };
+
+  // --------------------------------
   // SEND MESSAGE
   // --------------------------------
 
   const sendMessage = async () => {
-    if (loading) {
+    if (loading || isRecording || isProcessingVoice || isSpeaking) {
       return;
+    }
+
+    // Stop any ongoing voice activity
+    stopAudioPlayback();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      mediaRecorderRef.current.stop();
     }
 
     // Reset stop flag at the very start so a stale 'true' from a previous
@@ -526,14 +751,14 @@ setMessages((previous) => {
     return updated;
 });
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(
         "FILE / AI ERROR:",
         error
       );
 
       const errorMessage =
-        error?.message
+        error instanceof Error
           ? `❌ Error: ${error.message}`
           : "❌ Unable to process the request. Please try again.";
 
@@ -550,6 +775,16 @@ setMessages((previous) => {
       setLoading(false);
     }
   };
+
+  // Stop audio when switching chats
+  const previousChatIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (previousChatIdRef.current !== null && previousChatIdRef.current !== chatId) {
+      stopAudioPlayback();
+    }
+    previousChatIdRef.current = chatId;
+  }, [chatId]);
 
   return (
     <div className="p-3 md:p-4 border-t border-gray-700">
@@ -601,6 +836,23 @@ setMessages((previous) => {
 
       {/* INPUT AREA */}
 
+      {(voiceError || voicePermissionError || voiceUnsupportedError) && (
+        <div className="mb-3 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+          {voicePermissionError || voiceUnsupportedError || voiceError}
+          <button
+            type="button"
+            onClick={() => {
+              setVoiceError(null);
+              setVoicePermissionError(null);
+              setVoiceUnsupportedError(null);
+            }}
+            className="ml-3 text-red-300 hover:text-white font-bold"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-2 flex-wrap sm:flex-nowrap">
 
         {/* FILE BUTTON */}
@@ -626,25 +878,75 @@ setMessages((previous) => {
 
         {/* CAMERA BUTTON */}
 
-<label
-  className={`bg-gray-700 text-white px-4 py-2 rounded ${
-    loading
-      ? "opacity-50 cursor-not-allowed"
-      : "cursor-pointer hover:bg-gray-600"
-  }`}
-  title="Take a photo"
->
-  📷
+        <label
+          className={`bg-gray-700 text-white px-4 py-2 rounded ${
+            loading || isRecording || isProcessingVoice || isSpeaking
+              ? "opacity-50 cursor-not-allowed"
+              : "cursor-pointer hover:bg-gray-600"
+          }`}
+          title="Take a photo"
+        >
+          📷
 
-  <input
-    type="file"
-    accept="image/*"
-    capture="environment"
-    onChange={handleFileSelect}
-    className="hidden"
-    disabled={loading}
-  />
-</label>
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handleFileSelect}
+            className="hidden"
+            disabled={loading || isRecording || isProcessingVoice || isSpeaking}
+          />
+        </label>
+
+        {/* VOICE BUTTON / STATUS */}
+
+        {isRecording ? (
+          <button
+            type="button"
+            onClick={stopRecording}
+            className="bg-red-600 text-white px-4 py-2 rounded animate-pulse flex items-center gap-2"
+            title="Stop recording"
+          >
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+            </span>
+            <span className="hidden sm:inline">Recording</span>
+          </button>
+        ) : isProcessingVoice ? (
+          <button
+            type="button"
+            disabled
+            className="bg-yellow-600 text-white px-4 py-2 rounded flex items-center gap-2 opacity-70"
+            title="Processing voice"
+          >
+            <span className="animate-spin inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span>
+            <span className="hidden sm:inline">Processing</span>
+          </button>
+        ) : isSpeaking ? (
+          <button
+            type="button"
+            onClick={stopAudioPlayback}
+            className="bg-purple-600 text-white px-4 py-2 rounded flex items-center gap-2"
+            title="Stop audio"
+          >
+            🔊, <span className="hidden sm:inline">Speaking</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={startRecording}
+            disabled={loading}
+            className={`bg-gray-700 text-white px-4 py-2 rounded ${
+              loading
+                ? "opacity-50 cursor-not-allowed"
+                : "cursor-pointer hover:bg-gray-600"
+            }`}
+            title="Record voice message"
+          >
+            🎙️
+          </button>
+        )}
 
         {/* TEXT INPUT */}
 
@@ -653,6 +955,12 @@ setMessages((previous) => {
           placeholder={
             selectedFiles.length > 0
               ? `Ask something about ${selectedFiles.length} selected file(s)...`
+              : isRecording
+              ? "Listening..."
+              : isProcessingVoice
+              ? "Processing voice..."
+              : isSpeaking
+              ? "Playing response..."
               : "Type your message..."
           }
           value={input}
@@ -670,7 +978,7 @@ setMessages((previous) => {
               sendMessage();
             }
           }}
-          disabled={loading}
+          disabled={loading || isRecording || isProcessingVoice || isSpeaking}
         />
 
         {/* SEND BUTTON */}
@@ -683,7 +991,7 @@ setMessages((previous) => {
             : sendMessage
     }
     disabled={
-        !loading &&
+        (loading || isRecording || isProcessingVoice || isSpeaking) &&
         !input.trim() &&
         selectedFiles.length === 0
     }

@@ -329,3 +329,104 @@ export async function streamAI(
 
     return response.body;
 }
+
+// ==============================
+// VOICE
+// ==============================
+
+export type VoiceResponse = {
+  user_text: string;
+  response: string;
+  language: string;
+  language_name: string;
+  chat_id: number | null;
+  audio_base64?: string | null;
+  audio_format?: string | null;
+  message?: string;
+};
+
+export async function sendVoiceMessage(
+  audioBlob: Blob,
+  chatId: number | null,
+  language = "auto",
+  speak = true
+): Promise<VoiceResponse> {
+  const formData = new FormData();
+  formData.append("audio", audioBlob, "voice-message.webm");
+  formData.append("language", language);
+  formData.append("speak", String(speak));
+  if (chatId !== null) {
+    formData.append("chat_id", String(chatId));
+  }
+
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_URL}/voice/voice`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail: any = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    const message =
+      detail?.detail?.message ||
+      detail?.message ||
+      "Voice request failed";
+    throw new Error(message);
+  }
+
+  return (await response.json()) as VoiceResponse;
+}
+
+export async function sendVoiceText(
+  text: string,
+  chatId: number | null,
+  language = "auto",
+  speak = true
+): Promise<VoiceResponse> {
+  const formData = new FormData();
+  formData.append("text", text);
+  formData.append("language", language);
+  formData.append("speak", String(speak));
+  if (chatId !== null) {
+    formData.append("chat_id", String(chatId));
+  }
+
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_URL}/voice/chat`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail: any = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    const message =
+      detail?.detail?.message ||
+      detail?.message ||
+      "Voice chat failed";
+    throw new Error(message);
+  }
+
+  return (await response.json()) as VoiceResponse;
+}

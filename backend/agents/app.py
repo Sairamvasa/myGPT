@@ -1,7 +1,7 @@
 import os
 import shutil
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Body
 
@@ -9,7 +9,7 @@ from fastapi import Body
 # other imports
 from database import *
 from models import *
-from gemini import *
+from llm import ask_llm, LLMError
 from rag import *
 from agents.agent import Agent
 agent = Agent()
@@ -74,10 +74,7 @@ def chat(data: ChatRequest):
     if result is not None:
         answer = result
     else:
-        answer = ask_gemini(
-            data.message,
-            context
-        )
+        answer = ask_llm(data.message)
 
     save_message(
         data.chat_id,
@@ -257,10 +254,20 @@ async def analyze_uploaded_image(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    answer = analyze_image(
-        file_path,
-        question
-    )
+    try:
+        answer = analyze_image(
+            file_path,
+            question
+        )
+    except LLMError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={
+                "error": True,
+                "code": e.kind,
+                "message": e.user_message,
+            },
+        )
 
     return {
         "response": answer

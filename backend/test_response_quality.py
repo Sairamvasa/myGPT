@@ -5,7 +5,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(__file__))
 
 from agents.agent import Agent
-from gemini import ask_gemini
+from llm import ask_llm, LLMError
 
 agent = Agent()
 
@@ -57,9 +57,9 @@ for i, prompt in enumerate(prompts, 1):
     print(f"Memories used: {len(result.get('memories', []))}")
 
     try:
-        answer = ask_gemini(result["prompt"])
+        answer = ask_llm(result["prompt"])
     except Exception as e:
-        answer = f"[Gemini Error: {e}]"
+        answer = f"[LLM Error: {e}]"
 
     print(f"\nResponse length: {len(answer)} chars")
     print(f"Has code fences: {'```' in answer}")
@@ -71,7 +71,7 @@ for i, prompt in enumerate(prompts, 1):
     # Basic automated checks
     checks = []
     checks.append(("Non-empty", len(answer.strip()) > 0))
-    checks.append(("Not just error", not answer.strip().startswith("Gemini Error")))
+    checks.append(("Not just error", not answer.strip().startswith("LLM Error")))
     checks.append(("Reasonable length", 50 < len(answer) < 8000))
 
     if "code" in prompt.lower() or "program" in prompt.lower() or "example" in prompt.lower():
