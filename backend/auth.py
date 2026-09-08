@@ -1,4 +1,7 @@
 import os
+import secrets
+
+from dotenv import load_dotenv
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from fastapi import HTTPException, Depends
@@ -6,7 +9,18 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Security
 from database import get_conversation_owner
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "mygpt-super-secure-jwt-secret-key-2026")
+load_dotenv()
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+
+if not JWT_SECRET_KEY:
+    if APP_ENV == "production":
+        raise RuntimeError("JWT_SECRET_KEY must be configured in production.")
+
+    # Development remains convenient, but no predictable secret is shipped.
+    JWT_SECRET_KEY = secrets.token_urlsafe(32)
+
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 

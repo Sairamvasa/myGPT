@@ -1,8 +1,17 @@
 import os
-import re
+import json
+from pathlib import Path
 
 from pypdf import PdfReader
 from langchain_core.documents import Document
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+
+
+BASE_DIR = Path(__file__).resolve().parent
+RAG_STORAGE_DIR = Path(
+    os.getenv("RAG_STORAGE_DIR", str(BASE_DIR / "rag_indexes"))
+)
 
 
 class RecursiveCharacterTextSplitter:
@@ -96,6 +105,61 @@ uploaded_files_map = {}
 # Lazy load embedding model to prevent startup crashes.
 embeddings = None
 
+
+def _user_index_dir(user_id):
+    return RAG_STORAGE_DIR / str(user_id)
+
+
+def _manifest_path(user_id):
+    return _user_index_dir(user_id) / "files.json"
+
+
+def _persist_user_state(user_id):
+    vector_store = vector_stores.get(user_id)
+    if vector_store is None:
+        return
+
+    index_dir = _user_index_dir(user_id)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    vector_store.save_local(str(index_dir))
+
+    with _manifest_path(user_id).open("w", encoding="utf-8") as manifest:
+        json.dump(sorted(uploaded_files_map.get(user_id, set())), manifest)
+
+
+def _load_user_state(user_id):
+    if user_id in vector_stores:
+        return True
+
+    index_dir = _user_index_dir(user_id)
+    if not (index_dir / "index.faiss").exists():
+        return False
+
+    try:
+        vector_stores[user_id] = FAISS.load_local(
+            str(index_dir),
+            get_embeddings(),
+            allow_dangerous_deserialization=True,
+        )
+
+        manifest_path = _manifest_path(user_id)
+        if manifest_path.exists():
+            with manifest_path.open("r", encoding="utf-8") as manifest:
+                uploaded_files_map[user_id] = set(json.load(manifest))
+        else:
+            uploaded_files_map[user_id] = {
+                document.metadata.get("source", "")
+                for document in vector_stores[user_id].docstore._dict.values()
+                if document.metadata.get("source")
+            }
+
+        return True
+    except Exception as error:
+        print(f"Unable to load persisted RAG index for user {user_id}: {error}")
+        vector_stores.pop(user_id, None)
+        uploaded_files_map.pop(user_id, None)
+        return False
+
 def get_embeddings():
     global embeddings
     if embeddings is None:
@@ -109,13 +173,15 @@ def get_embeddings():
     return embeddings
 
 
-def process_pdf(pdf_path, user_id):
+def process_pdf(pdf_path, user_id, source_filename=None):
     global vector_stores
     global uploaded_files_map
 
+    _load_user_state(user_id)
+
     reader = PdfReader(pdf_path)
 
-    filename = os.path.basename(pdf_path)
+    filename = source_filename or os.path.basename(pdf_path)
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1500,
@@ -169,6 +235,7 @@ def process_pdf(pdf_path, user_id):
         uploaded_files_map[user_id] = set()
 
     uploaded_files_map[user_id].add(filename)
+    _persist_user_state(user_id)
 
     print(
         f"PDF processed: {filename} "
@@ -183,12 +250,14 @@ def process_pdf(pdf_path, user_id):
     return len(documents)
 
 
-def process_text_file(file_path, user_id):
+def process_text_file(file_path, user_id, source_filename=None):
     """Process any plain-text / code file (py, html, js, ts, css, json, csv, md, txt, etc.)"""
     global vector_stores
     global uploaded_files_map
 
-    filename = os.path.basename(file_path)
+    _load_user_state(user_id)
+
+    filename = source_filename or os.path.basename(file_path)
 
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         raw_text = f.read()
@@ -226,6 +295,7 @@ def process_text_file(file_path, user_id):
         uploaded_files_map[user_id] = set()
 
     uploaded_files_map[user_id].add(filename)
+    _persist_user_state(user_id)
 
     print(f"Text/code file processed: {filename} ({len(documents)} chunks)")
     print("All uploaded files:", uploaded_files_map[user_id])
@@ -240,6 +310,8 @@ def search_pdf(
 ):
     global vector_stores
     global uploaded_files_map
+
+    _load_user_state(user_id)
 
     if user_id not in vector_stores:
         return None
@@ -317,4 +389,4 @@ PAGE: {page}
 
     return "\n\n---\n\n".join(
         context_parts
-    )
+    )

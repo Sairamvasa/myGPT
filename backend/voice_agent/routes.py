@@ -16,6 +16,7 @@ from voice_agent.tts import MultilingualTTS
 from database import save_message
 from auth import get_current_user, verify_chat_ownership
 from llm import LLMError
+from file_utils import MAX_UPLOAD_BYTES
 
 logger = logging.getLogger("MyGPT.Voice.API")
 
@@ -91,9 +92,14 @@ async def health():
 
 
 def _save_upload_to_wav(upload: UploadFile) -> tuple[str, int]:
-    data = upload.file.read()
+    data = upload.file.read(MAX_UPLOAD_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio file.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Uploaded audio exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+        )
 
     suffix = ".bin"
     name = (upload.filename or "").lower()

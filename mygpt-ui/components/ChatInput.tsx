@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef } from "react";
 import {
-    askAI,
     uploadFiles,
     analyzeImage,
     streamAI,
@@ -18,7 +17,6 @@ type ChatMessage = {
 };
 
 type Props = {
-  messages: ChatMessage[];
   setMessages: React.Dispatch<
     React.SetStateAction<ChatMessage[]>
   >;
@@ -27,7 +25,6 @@ type Props = {
 };
 
 export default function ChatInput({
-  messages,
   setMessages,
   chatId,
   onChatCreated,

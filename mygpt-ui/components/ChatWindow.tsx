@@ -57,7 +57,7 @@ export default function ChatWindow({ chatId, onChatCreated }: Props) {
               className="p-3 bg-[#343541] hover:bg-[#444654] rounded-xl text-left text-sm border border-zinc-700/50 transition-colors"
             >
               <span className="font-semibold block text-white">🌐 Live Web Search</span>
-              <span className="text-gray-400 text-xs">"What is the latest AI news today?"</span>
+              <span className="text-gray-400 text-xs">&quot;What is the latest AI news today?&quot;</span>
             </button>
 
             <button
@@ -70,7 +70,7 @@ export default function ChatWindow({ chatId, onChatCreated }: Props) {
               className="p-3 bg-[#343541] hover:bg-[#444654] rounded-xl text-left text-sm border border-zinc-700/50 transition-colors"
             >
               <span className="font-semibold block text-white">🐍 Python Math & Code</span>
-              <span className="text-gray-400 text-xs">"Calculate 2^32 / 1024 in Python"</span>
+              <span className="text-gray-400 text-xs">&quot;Calculate 2^32 / 1024 in Python&quot;</span>
             </button>
 
             <button
@@ -83,7 +83,7 @@ export default function ChatWindow({ chatId, onChatCreated }: Props) {
               className="p-3 bg-[#343541] hover:bg-[#444654] rounded-xl text-left text-sm border border-zinc-700/50 transition-colors"
             >
               <span className="font-semibold block text-white">🧠 Long-Term Memory</span>
-              <span className="text-gray-400 text-xs">"Remember my stack preferences"</span>
+              <span className="text-gray-400 text-xs">&quot;Remember my stack preferences&quot;</span>
             </button>
 
             <button
@@ -96,7 +96,7 @@ export default function ChatWindow({ chatId, onChatCreated }: Props) {
               className="p-3 bg-[#343541] hover:bg-[#444654] rounded-xl text-left text-sm border border-zinc-700/50 transition-colors"
             >
               <span className="font-semibold block text-white">💡 Concept Explanation</span>
-              <span className="text-gray-400 text-xs">"Explain quantum computing simply"</span>
+              <span className="text-gray-400 text-xs">&quot;Explain quantum computing simply&quot;</span>
             </button>
           </div>
         </div>
@@ -105,7 +105,6 @@ export default function ChatWindow({ chatId, onChatCreated }: Props) {
       )}
 
       <ChatInput
-        messages={messages}
         setMessages={setMessages}
         chatId={chatId}
         onChatCreated={onChatCreated}

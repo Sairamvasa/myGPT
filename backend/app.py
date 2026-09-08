@@ -1,27 +1,28 @@
 import os
-import shutil
+import tempfile
 import bcrypt
 
 from pydantic import BaseModel
 
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from jose import jwt, JWTError
+from jose import jwt
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
+# Load configuration before importing modules that read environment variables.
+load_dotenv()
 
 from vision import analyze_image
 from database import *
 from models import *
-from gemini import GeminiError
 from rag import *
 from agents.agent import Agent
 from auth import get_current_user, verify_chat_ownership, JWT_SECRET_KEY, JWT_ALGORITHM
 from llm import ask_llm, stream_llm, LLMError
 from voice_agent.routes import router as voice_router
-
-load_dotenv()
+from file_utils import safe_filename, save_upload_file
 
 class RegisterRequest(BaseModel):
     name: str
@@ -189,8 +190,10 @@ async def upload_pdf(
     user_id: int = Depends(get_current_user)
 ):
 
+    filename = safe_filename(file.filename)
+
     # Only allow PDF files
-    if not file.filename.lower().endswith(".pdf"):
+    if not filename.lower().endswith(".pdf"):
         return {
             "error": "Only PDF files are allowed"
         }
@@ -199,18 +202,17 @@ async def upload_pdf(
     user_dir = os.path.join("uploads", str(user_id))
     os.makedirs(user_dir, exist_ok=True)
 
-    file_path = os.path.join(user_dir, file.filename)
+    file_path = os.path.join(user_dir, filename)
 
     # Save PDF inside user's upload folder
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    save_upload_file(file, file_path)
 
     # Process PDF using RAG (scoped to this user)
-    chunks = process_pdf(file_path, user_id)
+    chunks = process_pdf(file_path, user_id, source_filename=filename)
 
     return {
         "message": "PDF uploaded and processed successfully",
-        "filename": file.filename,
+        "filename": filename,
         "chunks": chunks
     }
 @app.get("/conversations")
@@ -276,30 +278,33 @@ async def upload_files(
                 })
                 continue
 
-            extension = os.path.splitext(
-                file.filename
-            )[1].lower()
+            filename = safe_filename(file.filename)
+            extension = os.path.splitext(filename)[1].lower()
+
+            if extension != ".pdf" and extension not in TEXT_EXTENSIONS:
+                results.append({
+                    "filename": filename,
+                    "status": "skipped",
+                    "message": f"Unsupported file type: {extension}"
+                })
+                continue
 
             file_path = os.path.join(
                 user_dir,
-                file.filename
+                filename
             )
 
             # Save file to disk
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(
-                    file.file,
-                    buffer
-                )
+            save_upload_file(file, file_path)
 
-            print("Saved:", file.filename)
+            print("Saved:", filename)
 
             if extension == ".pdf":
                 # Process using RAG PDF pipeline
-                chunks = process_pdf(file_path, user_id)
-                print("Successfully processed PDF:", file.filename)
+                chunks = process_pdf(file_path, user_id, source_filename=filename)
+                print("Successfully processed PDF:", filename)
                 results.append({
-                    "filename": file.filename,
+                    "filename": filename,
                     "status": "success",
                     "type": "pdf",
                     "chunks": chunks
@@ -307,20 +312,13 @@ async def upload_files(
 
             elif extension in TEXT_EXTENSIONS:
                 # Process as plain text / code file
-                chunks = process_text_file(file_path, user_id)
-                print("Successfully processed text/code file:", file.filename)
+                chunks = process_text_file(file_path, user_id, source_filename=filename)
+                print("Successfully processed text/code file:", filename)
                 results.append({
-                    "filename": file.filename,
+                    "filename": filename,
                     "status": "success",
                     "type": "text",
                     "chunks": chunks
-                })
-
-            else:
-                results.append({
-                    "filename": file.filename,
-                    "status": "skipped",
-                    "message": f"Unsupported file type: {extension}"
                 })
 
         except Exception as e:
@@ -333,7 +331,7 @@ async def upload_files(
             )
 
             results.append({
-                "filename": file.filename or "unknown",
+                "filename": safe_filename(file.filename, "unknown"),
                 "status": "error",
                 "message": str(e)
             })
@@ -371,17 +369,32 @@ def delete_chat(chat_id: int, user_id: int = Depends(get_current_user)):
     }
 
 @app.post("/vision")
-def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image.")):
+def vision(
+    file: UploadFile = File(...),
+    prompt: str = Form("Describe this image."),
+    user_id: int = Depends(get_current_user),
+):
+    filename = safe_filename(file.filename, "image")
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPG, PNG, and WEBP images are allowed.",
+        )
 
-    os.makedirs("uploads", exist_ok=True)
-
-    file_path = f"uploads/{file.filename}"
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    user_dir = os.path.join("uploads", str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+    fd, file_path = tempfile.mkstemp(
+        suffix=extension,
+        prefix="vision_",
+        dir=user_dir,
+    )
+    os.close(fd)
 
     try:
+        save_upload_file(file, file_path)
         answer = analyze_image(file_path, prompt)
+        return {"answer": answer}
     except LLMError as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -392,10 +405,11 @@ def vision(file: UploadFile = File(...), prompt: str = Form("Describe this image
                 "retry_after_seconds": e.retry_after,
             },
         )
-
-    return {
-        "answer": answer
-    }
+    finally:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
     
 @app.post("/stream")
 def stream(data: ChatRequest, user_id: int = Depends(get_current_user)):

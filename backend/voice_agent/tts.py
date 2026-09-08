@@ -78,11 +78,11 @@ class MultilingualTTS(TTSProvider):
 
     def stop(self) -> None:
         self._stop_requested = True
-    if sd is not None:
-        try:
-            sd.stop()
-        except Exception:
-            pass
+        if sd is not None:
+            try:
+                sd.stop()
+            except Exception:
+                pass
         if self.pyttsx3_engine:
             try:
                 self.pyttsx3_engine.stop()

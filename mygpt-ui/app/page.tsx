@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import Sidebar from "@/components/Sidebar";
 import ChatWindow from "@/components/ChatWindow";
@@ -19,6 +19,10 @@ type Conversation = {
   chat_id: number;
   title: string;
 };
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
 
 export default function Home() {
   const [chatId, setChatId] = useState<number | null>(null);
@@ -48,39 +52,39 @@ export default function Home() {
   useEffect(() => {
     const token = getToken();
 
-    if (token) {
-      setIsLoggedIn(true);
-    }
+    const timer = window.setTimeout(() => {
+      setIsLoggedIn(Boolean(token));
+      setCheckingAuth(false);
+    }, 0);
 
-    setCheckingAuth(false);
+    return () => window.clearTimeout(timer);
   }, []);
 
   // ==============================
   // LOAD CONVERSATIONS
   // ==============================
 
-  async function loadConversations() {
+  const loadConversations = useCallback(async () => {
     try {
       const data = await getConversations();
 
       setConversations(data);
 
-      if (chatId === null && data.length > 0) {
-        setChatId(data[0].chat_id);
-      }
-    } catch (error) {
-      console.error(
-        "Failed to load conversations:",
-        error
+      setChatId((currentChatId) =>
+        currentChatId === null && data.length > 0
+          ? data[0].chat_id
+          : currentChatId
       );
+    } catch (error) {
+      console.error("Failed to load conversations:", error);
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (isLoggedIn) {
-      loadConversations();
+      void Promise.resolve().then(loadConversations);
     }
-  }, [isLoggedIn]);
+  }, [isLoggedIn, loadConversations]);
 
   // ==============================
   // LOGIN
@@ -99,10 +103,8 @@ export default function Home() {
 
       setEmail("");
       setPassword("");
-    } catch (error: any) {
-      setAuthError(
-        error.message || "Login failed"
-      );
+    } catch (error: unknown) {
+      setAuthError(getErrorMessage(error, "Login failed"));
     } finally {
       setAuthLoading(false);
     }
@@ -137,10 +139,8 @@ export default function Home() {
       setAuthError(
         "Registration successful! Please login."
       );
-    } catch (error: any) {
-      setAuthError(
-        error.message || "Registration failed"
-      );
+    } catch (error: unknown) {
+      setAuthError(getErrorMessage(error, "Registration failed"));
     } finally {
       setAuthLoading(false);
     }
@@ -377,7 +377,7 @@ export default function Home() {
                 }}
                 className="w-full py-2 text-sm text-gray-400 hover:text-white"
               >
-                Don't have an account? Register
+                Don&apos;t have an account? Register
               </button>
 
             </form>

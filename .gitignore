@@ -43,6 +43,7 @@ uploads/
 backend/uploads/
 processed_images/
 backend/processed_images/
+backend/rag_indexes/
 
 
 # =========================

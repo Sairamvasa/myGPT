@@ -5,6 +5,28 @@ const API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "http://127.0.0.1:8000";
 
+function getApiErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+
+  const body = payload as Record<string, unknown>;
+  const detail = body.detail;
+
+  if (detail && typeof detail === "object") {
+    const detailBody = detail as Record<string, unknown>;
+    if (typeof detailBody.message === "string") {
+      return detailBody.message;
+    }
+  }
+
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  return typeof body.message === "string" ? body.message : fallback;
+}
+
 
   // ==============================
 // AUTH
@@ -101,6 +123,11 @@ function authHeaders() {
       : {}),
   };
 }
+
+function bearerHeaders(): HeadersInit {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 // ==============================
 // ASK AI
 // ==============================
@@ -119,17 +146,13 @@ export async function askAI(
   });
 
   if (!response.ok) {
-    let detail: any = {};
+    let detail: unknown = {};
     try {
       detail = await response.json();
     } catch {
       // ignore non-JSON error bodies
     }
-    const message =
-      detail?.detail?.message ||
-      detail?.message ||
-      "Failed to get AI response";
-    throw new Error(message);
+    throw new Error(getApiErrorMessage(detail, "Failed to get AI response"));
   }
 
   const data = await response.json();
@@ -217,18 +240,12 @@ export async function uploadFiles(
     )
   );
 
-  const headers: HeadersInit = {};
-  const token = getToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
   const response = await fetch(
     `${API_URL}/upload-files`,
     {
       method: "POST",
       body: formData,
-      headers: headers,
+      headers: bearerHeaders(),
     }
   );
 
@@ -264,21 +281,18 @@ export async function analyzeImage(
     {
       method: "POST",
       body: formData,
+      headers: bearerHeaders(),
     }
   );
 
   if (!response.ok) {
-    let detail: any = {};
+    let detail: unknown = {};
     try {
       detail = await response.json();
     } catch {
       // ignore non-JSON error bodies
     }
-    const message =
-      detail?.detail?.message ||
-      detail?.message ||
-      "Image analysis failed";
-    throw new Error(message);
+    throw new Error(getApiErrorMessage(detail, "Image analysis failed"));
   }
 
   return await response.json();
@@ -372,17 +386,13 @@ export async function sendVoiceMessage(
   });
 
   if (!response.ok) {
-    let detail: any = {};
+    let detail: unknown = {};
     try {
       detail = await response.json();
     } catch {
       // ignore non-JSON error bodies
     }
-    const message =
-      detail?.detail?.message ||
-      detail?.message ||
-      "Voice request failed";
-    throw new Error(message);
+    throw new Error(getApiErrorMessage(detail, "Voice request failed"));
   }
 
   return (await response.json()) as VoiceResponse;
@@ -415,17 +425,13 @@ export async function sendVoiceText(
   });
 
   if (!response.ok) {
-    let detail: any = {};
+    let detail: unknown = {};
     try {
       detail = await response.json();
     } catch {
       // ignore non-JSON error bodies
     }
-    const message =
-      detail?.detail?.message ||
-      detail?.message ||
-      "Voice chat failed";
-    throw new Error(message);
+    throw new Error(getApiErrorMessage(detail, "Voice chat failed"));
   }
 
   return (await response.json()) as VoiceResponse;
