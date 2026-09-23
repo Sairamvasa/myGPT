@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import Sidebar from "@/components/Sidebar";
-import ChatWindow from "@/components/ChatWindow";
+import AppShell from "@/components/AppShell";
 
 import {
   createNewChat,
@@ -110,7 +109,7 @@ export default function Home() {
     }
   }
 
-  // ==============================
+// ==============================
   // REGISTER
   // ==============================
 
@@ -129,16 +128,13 @@ export default function Home() {
         password
       );
 
-      // Registration successful
-      // Go to login screen
-      setShowRegister(false);
+      // Registration now returns access_token and logs user in automatically
+      setIsLoggedIn(true);
 
       setName("");
+      setEmail("");
       setPassword("");
-
-      setAuthError(
-        "Registration successful! Please login."
-      );
+      setShowRegister(false);
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, "Registration failed"));
     } finally {
@@ -222,8 +218,9 @@ export default function Home() {
 
   if (checkingAuth) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#202123] text-white">
-        <div className="text-lg">
+      <div className="auth-loading-screen">
+        <div className="auth-loading-mark" aria-hidden="true">✦</div>
+        <div className="auth-loading-label">
           Loading MyGPT...
         </div>
       </div>
@@ -236,26 +233,26 @@ export default function Home() {
 
   if (!isLoggedIn) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#202123] px-4 text-white">
-        <div className="w-full max-w-md rounded-2xl bg-[#343541] p-8 shadow-2xl">
+      <div className="auth-screen">
+        <div className="auth-card">
 
           {/* LOGO */}
-          <div className="mb-8 text-center">
-            <div className="text-4xl">
+          <div className="auth-brand">
+            <div className="auth-brand-mark" aria-hidden="true">
               🤖
             </div>
 
-            <h1 className="mt-2 text-3xl font-bold">
+            <h1>
               MyGPT
             </h1>
 
-            <p className="mt-2 text-gray-400">
+            <p>
               Your personal AI assistant
             </p>
           </div>
 
           {/* TITLE */}
-          <h2 className="mb-6 text-center text-xl font-semibold">
+          <h2 className="auth-card-title">
             {showRegister
               ? "Create your account"
               : "Welcome back"}
@@ -263,7 +260,7 @@ export default function Home() {
 
           {/* ERROR / SUCCESS */}
           {authError && (
-            <div className="mb-4 rounded-lg bg-[#444654] p-3 text-sm text-gray-200">
+            <div className="auth-feedback">
               {authError}
             </div>
           )}
@@ -272,7 +269,7 @@ export default function Home() {
           {showRegister ? (
             <form
               onSubmit={handleRegister}
-              className="space-y-4"
+              className="auth-form"
             >
 
               <input
@@ -283,7 +280,7 @@ export default function Home() {
                   setName(e.target.value)
                 }
                 required
-                className="w-full rounded-lg bg-[#202123] px-4 py-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
+                className="auth-input"
               />
 
               <input
@@ -294,7 +291,7 @@ export default function Home() {
                   setEmail(e.target.value)
                 }
                 required
-                className="w-full rounded-lg bg-[#202123] px-4 py-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
+                className="auth-input"
               />
 
               <input
@@ -305,13 +302,14 @@ export default function Home() {
                   setPassword(e.target.value)
                 }
                 required
-                className="w-full rounded-lg bg-[#202123] px-4 py-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
+                minLength={8}
+                className="auth-input"
               />
 
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full rounded-lg bg-blue-600 py-3 font-semibold hover:bg-blue-700 disabled:opacity-50"
+                className="auth-submit-button"
               >
                 {authLoading
                   ? "Registering..."
@@ -324,7 +322,7 @@ export default function Home() {
                   setShowRegister(false);
                   setAuthError("");
                 }}
-                className="w-full py-2 text-sm text-gray-400 hover:text-white"
+                className="auth-switch-button"
               >
                 Already have an account? Login
               </button>
@@ -334,7 +332,7 @@ export default function Home() {
             /* LOGIN */
             <form
               onSubmit={handleLogin}
-              className="space-y-4"
+              className="auth-form"
             >
 
               <input
@@ -345,7 +343,7 @@ export default function Home() {
                   setEmail(e.target.value)
                 }
                 required
-                className="w-full rounded-lg bg-[#202123] px-4 py-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
+                className="auth-input"
               />
 
               <input
@@ -356,13 +354,13 @@ export default function Home() {
                   setPassword(e.target.value)
                 }
                 required
-                className="w-full rounded-lg bg-[#202123] px-4 py-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
+                className="auth-input"
               />
 
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full rounded-lg bg-blue-600 py-3 font-semibold hover:bg-blue-700 disabled:opacity-50"
+                className="auth-submit-button"
               >
                 {authLoading
                   ? "Logging in..."
@@ -375,7 +373,7 @@ export default function Home() {
                   setShowRegister(true);
                   setAuthError("");
                 }}
-                className="w-full py-2 text-sm text-gray-400 hover:text-white"
+                className="auth-switch-button"
               >
                 Don&apos;t have an account? Register
               </button>
@@ -392,32 +390,17 @@ export default function Home() {
   // ==============================
 
   return (
-    <div className="relative flex h-screen overflow-hidden">
-
-      <Sidebar
-        conversations={conversations}
-        activeChatId={chatId}
-        onNewChat={handleNewChat}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
-      />
-
-      <ChatWindow
-        chatId={chatId}
-        onChatCreated={(newId) => {
-          setChatId(newId);
-          loadConversations();
-        }}
-      />
-
-      {/* LOGOUT BUTTON */}
-      <button
-        onClick={handleLogout}
-        className="absolute right-3 top-3 z-50 rounded-lg bg-[#343541] px-3 py-2 text-sm text-white shadow hover:bg-[#444654]"
-      >
-        Logout
-      </button>
-
-    </div>
+    <AppShell
+      conversations={conversations}
+      activeChatId={chatId}
+      onNewChat={handleNewChat}
+      onSelectChat={handleSelectChat}
+      onDeleteChat={handleDeleteChat}
+      onChatCreated={(newId) => {
+        setChatId(newId);
+        loadConversations();
+      }}
+      onLogout={handleLogout}
+    />
   );
 }

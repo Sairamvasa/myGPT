@@ -38,5 +38,4 @@ def search_memories(question: str, user_id: int):
 
     if relevant:
         return relevant
-
-    return memories[:3]
+    return []

@@ -13,6 +13,16 @@ RAG_STORAGE_DIR = Path(
     os.getenv("RAG_STORAGE_DIR", str(BASE_DIR / "rag_indexes"))
 )
 
+# Relevance threshold for FAISS L2 distance scores.
+# FAISS uses Euclidean distance (L2) where LOWER = more relevant.
+# Observed score distribution:
+#   Relevant queries (calculator.py):   1.4584 – 1.5744
+#   Unrelated queries:                   1.8368 – 1.9164
+# A threshold of 1.70 sits safely in the gap and rejects weak matches.
+RAG_RELEVANCE_THRESHOLD = float(
+    os.getenv("RAG_RELEVANCE_THRESHOLD", "1.70")
+)
+
 
 class RecursiveCharacterTextSplitter:
     def __init__(self, chunk_size=1500, chunk_overlap=200, separators=None):
@@ -341,14 +351,31 @@ def search_pdf(
     fetch_k = max(total_needed * 4, 50)
 
     try:
-        all_docs = vector_store.similarity_search(question, k=fetch_k)
+        # Use similarity_search_with_score to get L2 distance scores.
+        # FAISS uses Euclidean distance: LOWER = more relevant.
+        all_docs_with_scores = vector_store.similarity_search_with_score(
+            question, k=fetch_k
+        )
     except Exception as error:
         print(f"RAG search error: {error}")
         return None
 
+    # Apply relevance threshold: reject chunks whose L2 distance exceeds
+    # the configured threshold. This prevents weak/unrelated retrieval
+    # from being treated as authoritative RAG context.
+    filtered_docs = [
+        (doc, score) for doc, score in all_docs_with_scores
+        if score <= RAG_RELEVANCE_THRESHOLD
+    ]
+
+    if not filtered_docs:
+        # No chunks passed the relevance threshold — return None so the
+        # agent falls back to normal chat instead of using weak context.
+        return None
+
     # Group results by source filename
     docs_by_file: dict[str, list] = {}
-    for doc in all_docs:
+    for doc, score in filtered_docs:
         source = doc.metadata.get("source", "")
         if source not in docs_by_file:
             docs_by_file[source] = []

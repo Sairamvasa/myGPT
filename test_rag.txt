@@ -1,0 +1,5 @@
+PROJECT_OWNER = ORBITAL_FALCON_92841
+
+This is a test document for RAG verification.
+The project owner is ORBITAL_FALCON_92841.
+This file contains information about the project configuration.

@@ -1,0 +1,57 @@
+[
+  {
+    "name": "Normal: What is Python?",
+    "agent_time": 3,
+    "ttft": 1916,
+    "first_chunk": 1916,
+    "first_visible": 1937,
+    "total": 27179,
+    "chunks": 160,
+    "tokens": 127,
+    "within_1s": false
+  },
+  {
+    "name": "Normal: What is 2+2?",
+    "agent_time": 0,
+    "ttft": 443,
+    "first_chunk": 444,
+    "first_visible": 465,
+    "total": 1449,
+    "chunks": 7,
+    "tokens": 5,
+    "within_1s": true
+  },
+  {
+    "name": "RAG: What is the output?",
+    "agent_time": 30,
+    "ttft": 5810,
+    "first_chunk": 5810,
+    "first_visible": 5831,
+    "total": 17680,
+    "chunks": 72,
+    "tokens": 45,
+    "within_1s": false
+  },
+  {
+    "name": "RAG: Explain this code",
+    "agent_time": 31,
+    "ttft": 531,
+    "first_chunk": 531,
+    "first_visible": 552,
+    "total": 23633,
+    "chunks": 160,
+    "tokens": 107,
+    "within_1s": true
+  },
+  {
+    "name": "RAG: What does this code do?",
+    "agent_time": 29,
+    "ttft": 587,
+    "first_chunk": 587,
+    "first_visible": 608,
+    "total": 8234,
+    "chunks": 58,
+    "tokens": 45,
+    "within_1s": true
+  }
+]

@@ -11,7 +11,7 @@ class VoiceAgent:
     def process(self, text: str, chat_id: int, user_id: int, language: str = "auto") -> dict:
         try:
             result = _mygpt_agent.run(text, chat_id, user_id)
-            answer = ask_llm(result["prompt"])
+            answer = result.get("answer") or ask_llm(result["prompt"])
             return {
                 "user_text": text,
                 "response": answer,

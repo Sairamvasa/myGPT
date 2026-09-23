@@ -1,0 +1,74 @@
+[
+  {
+    "name": "A: hi",
+    "planner": 5.6,
+    "agent": 0.3,
+    "ollama_ttft": 4177.4,
+    "ollama_total": 5775.9,
+    "total": 5782.0,
+    "prompt_len": 2,
+    "action": "chat",
+    "has_context": false,
+    "tokens": 7
+  },
+  {
+    "name": "B: What is Python?",
+    "planner": 0.4,
+    "agent": 0.3,
+    "ollama_ttft": 750.0,
+    "ollama_total": 38254.4,
+    "total": 38255.0,
+    "prompt_len": 15,
+    "action": "chat",
+    "has_context": false,
+    "tokens": 250
+  },
+  {
+    "name": "C: What is 2+2?",
+    "planner": 0.3,
+    "agent": 0.2,
+    "ollama_ttft": 533.3,
+    "ollama_total": 1445.6,
+    "total": 1446.0,
+    "prompt_len": 12,
+    "action": "chat",
+    "has_context": false,
+    "tokens": 5
+  },
+  {
+    "name": "D: longer normal question",
+    "planner": 0.9,
+    "agent": 0.8,
+    "ollama_ttft": 1110.1,
+    "ollama_total": 36712.0,
+    "total": 36714.0,
+    "prompt_len": 105,
+    "action": "chat",
+    "has_context": false,
+    "tokens": 235
+  },
+  {
+    "name": "E: RAG 'Explain this code'",
+    "planner": 6.2,
+    "agent": 57.6,
+    "ollama_ttft": 55212.3,
+    "ollama_total": 96891.1,
+    "total": 96955.0,
+    "prompt_len": 6891,
+    "action": "rag",
+    "has_context": true,
+    "tokens": 247
+  },
+  {
+    "name": "F: RAG 'What is the output?'",
+    "planner": 0.4,
+    "agent": 31.4,
+    "ollama_ttft": 905.6,
+    "ollama_total": 43714.7,
+    "total": 43747.0,
+    "prompt_len": 6893,
+    "action": "rag",
+    "has_context": true,
+    "tokens": 223
+  }
+]

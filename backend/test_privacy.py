@@ -21,14 +21,14 @@ print("MULTI-USER PRIVACY TESTS")
 print("=" * 60)
 
 # 1. Register two users
-ra = client.post("/register", json={"name": "User A", "email": email_a, "password": "pass123"})
-rb = client.post("/register", json={"name": "User B", "email": email_b, "password": "pass123"})
+ra = client.post("/register", json={"name": "User A", "email": email_a, "password": "pass1234"})
+rb = client.post("/register", json={"name": "User B", "email": email_b, "password": "pass1234"})
 print("Register A:", ra.json())
 print("Register B:", rb.json())
 
 # 2. Login to get JWTs
-la = client.post("/login", json={"email": email_a, "password": "pass123"})
-lb = client.post("/login", json={"email": email_b, "password": "pass123"})
+la = client.post("/login", json={"email": email_a, "password": "pass1234"})
+lb = client.post("/login", json={"email": email_b, "password": "pass1234"})
 token_a = la.json()["access_token"]
 token_b = lb.json()["access_token"]
 user_a = la.json()["user_id"]

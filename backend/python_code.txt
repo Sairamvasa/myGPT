@@ -1,0 +1,31 @@
+Here is a complete Python program to sort the list `[5, 2, 8, 1]`:
+
+```python
+def sort_list(numbers: list[int]) -> list[int]:
+    """Sorts a list of integers in ascending order.
+
+    Args:
+        numbers (list[int]): The input list of integers.
+
+    Returns:
+        list[int]: A new list with elements sorted in ascending order.
+    """
+    return sorted(numbers)
+
+
+def main() -> None:
+    original_list = [5, 2, 8, 1]
+    sorted_result = sort_list(original_list)
+
+    print(f"Original List: {original_list}")
+    print(f"Sorted List:   {sorted_result}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### Explanation
+- **`sorted()` function**: Python's built-in `sorted()` function returns a new sorted list from the items in any iterable, leaving the original list unchanged.
+- **Type Annotations**: `list[int]` is used for type hinting to specify expected inputs and outputs.
+- **`main()` block**: Encapsulates the execution logic and ensures the code only runs when executed directly as a script.

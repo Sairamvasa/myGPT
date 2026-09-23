@@ -8,6 +8,10 @@ from fastapi import HTTPException, UploadFile
 
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_TOTAL_UPLOAD_BYTES = int(
+    os.getenv("MAX_TOTAL_UPLOAD_BYTES", str(100 * 1024 * 1024))
+)
+MAX_UPLOAD_FILES = int(os.getenv("MAX_UPLOAD_FILES", "20"))
 
 
 def safe_filename(filename: str | None, default: str = "upload") -> str:
@@ -26,9 +30,22 @@ def save_upload_file(
     upload: UploadFile,
     destination: str | Path,
     max_bytes: int = MAX_UPLOAD_BYTES,
+    base_dir: str | Path | None = None,
 ) -> int:
     """Save an upload with a hard size limit and return its byte count."""
-    destination = Path(destination)
+    destination = Path(destination).resolve()
+    
+    # Validate destination is within base_dir if provided
+    if base_dir is not None:
+        base_dir = Path(base_dir).resolve()
+        try:
+            destination.relative_to(base_dir)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Destination path must be within the upload directory.",
+            )
+    
     destination.parent.mkdir(parents=True, exist_ok=True)
     total = 0
 

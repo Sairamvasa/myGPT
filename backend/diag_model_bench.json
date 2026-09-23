@@ -1,0 +1,57 @@
+[
+  {
+    "model": "llama3.2:1b",
+    "request": "What is Python?",
+    "ttft": 1560.359299999618,
+    "total": 21887.651600000027,
+    "tokens": 122,
+    "tok_per_sec": 6.000752946935342,
+    "correct": true,
+    "complete": false,
+    "hallucination": []
+  },
+  {
+    "model": "llama3.2:1b",
+    "request": "What is 2+2?",
+    "ttft": 441.3189000006241,
+    "total": 1324.1945000008855,
+    "tokens": 5,
+    "tok_per_sec": 5.663553222675055,
+    "correct": true,
+    "complete": true,
+    "hallucination": []
+  },
+  {
+    "model": "llama3.2:1b",
+    "request": "What is the output?",
+    "ttft": 6405.517299999701,
+    "total": 10173.905699999523,
+    "tokens": 15,
+    "tok_per_sec": 3.9818385688316544,
+    "correct": true,
+    "complete": true,
+    "hallucination": []
+  },
+  {
+    "model": "llama3.2:1b",
+    "request": "Explain this code",
+    "ttft": 554.2292000009184,
+    "total": 21379.25709999945,
+    "tokens": 108,
+    "tok_per_sec": 5.186159599835926,
+    "correct": true,
+    "complete": true,
+    "hallucination": []
+  },
+  {
+    "model": "llama3.2:1b",
+    "request": "What does this code do?",
+    "ttft": 518.9483000012842,
+    "total": 7704.891800000041,
+    "tokens": 45,
+    "tok_per_sec": 6.262335932017194,
+    "correct": true,
+    "complete": true,
+    "hallucination": []
+  }
+]

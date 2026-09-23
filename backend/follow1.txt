@@ -1,0 +1,46 @@
+Here is a complete, production-quality Java program that calculates the Greatest Common Divisor (GCD) of 48 and 18 using the Euclidean algorithm.
+
+```java
+public class GCDCalculator {
+
+    /**
+     * Calculates the Greatest Common Divisor (GCD) of two integers
+     * using the iterative Euclidean Algorithm.
+     *
+     * @param number1 the first integer
+     * @param number2 the second integer
+     * @return the greatest common divisor of number1 and number2
+     */
+    public static int calculateGCD(int number1, int number2) {
+        // Handle negative input values
+        int a = Math.abs(number1);
+        int b = Math.abs(number2);
+
+        while (b != 0) {
+            int remainder = a % b;
+            a = b;
+            b = remainder;
+        }
+
+        return a;
+    }
+
+    public static void main(String[] args) {
+        int num1 = 48;
+        int num2 = 18;
+
+        int gcd = calculateGCD(num1, num2);
+
+        System.out.printf("The GCD of %d and %d is: %d%n", num1, num2, gcd);
+    }
+}
+```
+
+### Explanation:
+1. **Algorithm**: The program uses the **Euclidean Algorithm**, which states that the GCD of two numbers also divides their difference. Repeatedly taking the remainder (`a % b`) quickly converges to the GCD.
+2. **Edge Case Handling**: `Math.abs()` is used to ensure the program correctly handles negative input values.
+3. **Execution Steps for 48 and 18**:
+   - Step 1: `48 % 18 = 12`
+   - Step 2: `18 % 12 = 6`
+   - Step 3: `12 % 6 = 0`
+   - Loop ends because `b` becomes `0`. The result is `6`.

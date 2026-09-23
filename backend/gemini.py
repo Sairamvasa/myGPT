@@ -1,10 +1,13 @@
 import os
+import base64
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash")
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.0-flash-exp-image-generation")
 
 _client = None
 
@@ -206,7 +209,7 @@ def analyze_image(
         from google.genai import types
         client = _get_client()
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=GEMINI_VISION_MODEL,
             contents=types.Content(
                 parts=[
                     types.Part.from_text(text=question),
@@ -227,6 +230,56 @@ def analyze_image(
             )
         return text
 
+    except GeminiError:
+        raise
+    except Exception as e:
+        raise _classify_gemini_error(e)
+
+
+# ===========================
+# GEMINI IMAGE GENERATION
+# ===========================
+
+def generate_image(
+    prompt: str,
+    aspect_ratio: str = "1:1",
+):
+    """
+    Generate an image using Gemini's image generation model.
+    
+    Args:
+        prompt: Text description of the image to generate
+        aspect_ratio: Aspect ratio for the generated image (e.g., "1:1", "16:9", "9:16", "4:3", "3:4")
+    
+    Returns:
+        base64 encoded image data
+    """
+    try:
+        from google.genai import types
+        client = _get_client()
+        
+        # Build the content with the prompt and image generation config
+        response = client.models.generate_content(
+            model=GEMINI_IMAGE_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+            ),
+        )
+        
+        # Extract image data from response
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
+                image_bytes = part.inline_data.data
+                # Return as base64 for easy frontend handling
+                return base64.b64encode(image_bytes).decode('utf-8')
+        
+        raise GeminiError(
+            "no_image_generated",
+            "The AI service did not generate an image. Please try again.",
+            502,
+        )
+    
     except GeminiError:
         raise
     except Exception as e:

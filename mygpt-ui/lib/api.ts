@@ -55,6 +55,22 @@ export async function registerUser(
     throw new Error(data.message || data.detail || "Registration failed");
   }
 
+  // Save JWT token and user info (same as login)
+  if (data.access_token) {
+    localStorage.setItem("access_token", data.access_token);
+  }
+
+  if (data.user_id) {
+    localStorage.setItem(
+      "user",
+      JSON.stringify({
+        user_id: data.user_id,
+        name: data.name,
+        email: data.email,
+      })
+    );
+  }
+
   return data;
 }
 
@@ -136,12 +152,16 @@ export async function askAI(
   message: string,
   chat_id: number | null
 ) {
+  if (chat_id === null) {
+    throw new Error("Create a chat before sending a message.");
+  }
+
   const response = await fetch(`${API_URL}/chat`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({
       message,
-      chat_id: chat_id || 1,
+      chat_id,
     }),
   });
 
@@ -322,8 +342,13 @@ export async function deleteConversation(
 
 export async function streamAI(
     message: string,
-    chatId: number | null
+    chatId: number | null,
+    signal?: AbortSignal
 ) {
+    if (chatId === null) {
+        throw new Error("Create a chat before sending a message.");
+    }
+
     const response = await fetch(
         `${API_URL}/stream`,
         {
@@ -331,8 +356,9 @@ export async function streamAI(
             headers: authHeaders(),
             body: JSON.stringify({
                 message,
-                chat_id: chatId || 1,
+                chat_id: chatId,
             }),
+            signal,
         }
     );
 

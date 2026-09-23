@@ -2,6 +2,17 @@
 
 import { useState, useEffect, useRef } from "react";
 import {
+  Camera,
+  FilePlus2,
+  FileText,
+  Image,
+  Mic,
+  Send,
+  Volume2,
+  X,
+  Code,
+} from "lucide-react";
+import {
     uploadFiles,
     analyzeImage,
     streamAI,
@@ -31,7 +42,6 @@ export default function ChatInput({
 }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [stopGeneration, setStopGeneration] = useState(false);
   // Multiple files
   const [selectedFiles, setSelectedFiles] =
     useState<File[]>([]);
@@ -48,6 +58,7 @@ export default function ChatInput({
   const audioChunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakingChatIdRef = useRef<number | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const handleQuickPrompt = (e: Event) => {
@@ -340,7 +351,7 @@ export default function ChatInput({
 
     try {
       let targetChatId = chatId;
-      if (!targetChatId) {
+      if (targetChatId === null) {
         try {
           const newChat = await createNewChat();
           targetChatId = newChat.chat_id;
@@ -348,8 +359,8 @@ export default function ChatInput({
             onChatCreated(newChat.chat_id);
           }
         } catch (err) {
-          console.warn("Could not create chat session on server, using session fallback", err);
-          targetChatId = 1;
+          console.warn("Could not create chat session on server", err);
+          throw new Error("Unable to create a chat. Please try again.");
         }
       }
 
@@ -388,7 +399,7 @@ export default function ChatInput({
   // SEND MESSAGE
   // --------------------------------
 
-  const sendMessage = async () => {
+const sendMessage = async () => {
     if (loading || isRecording || isProcessingVoice || isSpeaking) {
       return;
     }
@@ -398,10 +409,6 @@ export default function ChatInput({
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
     }
-
-    // Reset stop flag at the very start so a stale 'true' from a previous
-    // cancelled generation can never silently cancel the next message.
-    setStopGeneration(false);
 
     const userText = input.trim();
 
@@ -462,7 +469,7 @@ export default function ChatInput({
 
       // Auto-create chat if starting from a clean new session
       let targetChatId = chatId;
-      if (!targetChatId) {
+      if (targetChatId === null) {
         try {
           const newChat = await createNewChat();
           targetChatId = newChat.chat_id;
@@ -470,10 +477,15 @@ export default function ChatInput({
             onChatCreated(newChat.chat_id);
           }
         } catch (err) {
-          console.warn("Could not create chat session on server, using session fallback", err);
-          targetChatId = 1;
+          console.warn("Could not create chat session on server", err);
+          throw new Error("Unable to create a chat. Please try again.");
         }
       }
+
+      // Abort any stale controller and create a new one for this request
+      abortControllerRef.current?.abort();
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
 
       // =================================
       // DOCUMENTS (PDFs, TEXT, CODE)
@@ -531,7 +543,8 @@ export default function ChatInput({
         if (userText) {
           const stream = await streamAI(
             userText,
-            targetChatId
+            targetChatId,
+            abortController.signal
           );
 
 if (!stream) {
@@ -554,7 +567,7 @@ setMessages((previous) => [
 
 while (true) {
 
-    if (stopGeneration) {
+    if (abortController.signal.aborted) {
 
         reader.cancel();
 
@@ -686,7 +699,8 @@ setMessages((previous) => [
 
         const stream = await streamAI(
           userText,
-          targetChatId
+          targetChatId,
+          abortController.signal
         );
 
 if (!stream) {
@@ -711,7 +725,7 @@ setMessages((previous) => [
 
 while (true) {
 
-    if (stopGeneration) {
+    if (abortController.signal.aborted) {
         await reader.cancel();
         break;
     }
@@ -749,26 +763,32 @@ setMessages((previous) => {
 });
       }
     } catch (error: unknown) {
-      console.error(
-        "FILE / AI ERROR:",
-        error
-      );
+      // Handle AbortError as expected user cancellation, not an error
+      if (error instanceof Error && error.name === "AbortError") {
+        console.log("Generation aborted by user");
+      } else {
+        console.error(
+          "FILE / AI ERROR:",
+          error
+        );
 
-      const errorMessage =
-        error instanceof Error
-          ? `❌ Error: ${error.message}`
-          : "❌ Unable to process the request. Please try again.";
+        const errorMessage =
+          error instanceof Error
+            ? `❌ Error: ${error.message}`
+            : "❌ Unable to process the request. Please try again.";
 
-      setMessages(
-        (previous) => [
-          ...previous,
-          {
-            role: "assistant",
-            content: errorMessage,
-          },
-        ]
-      );
+        setMessages(
+          (previous) => [
+            ...previous,
+            {
+              role: "assistant",
+              content: errorMessage,
+            },
+          ]
+        );
+      }
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
     }
   };
@@ -784,44 +804,49 @@ setMessages((previous) => {
   }, [chatId]);
 
   return (
-    <div className="p-3 md:p-4 border-t border-gray-700">
+    <div className="composer-dock">
+      <div className="composer-shell">
 
       {/* SELECTED FILE PREVIEW */}
 
       {selectedFiles.length > 0 && (
-        <div className="mb-3">
+        <div className="attachment-summary">
 
-          <div className="mb-2 text-sm text-gray-400">
+          <div className="attachment-count">
+            <FilePlus2 size={15} aria-hidden="true" />
             {selectedFiles.length} file(s) selected
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="attachment-list">
 
-            {selectedFiles.map(
+{selectedFiles.map(
               (file, index) => (
                 <div
                   key={`${file.name}-${file.size}-${index}`}
-                  className="inline-flex items-center gap-3 bg-gray-700 px-4 py-2 rounded-xl text-white"
+                  className="attachment-chip"
                 >
-                  <span>
-                    {file.type.startsWith("image/")
-                      ? "🖼️"
-                      : file.name.endsWith(".pdf")
-                      ? "📄"
-                      : "💻"}
+                  <span className="attachment-icon" aria-hidden="true">
+                    {file.type.startsWith("image/") ? (
+                      // eslint-disable-next-line jsx-a11y/alt-text
+                      <Image size={15} aria-hidden="true" />
+                    ) : file.name.endsWith(".pdf") ? (
+                      <FileText size={15} aria-hidden="true" />
+                    ) : (
+                      <Code size={15} aria-hidden="true" />
+                    )}
                   </span>
 
-                  <span className="max-w-[200px] truncate">
+                  <span className="attachment-name">
                     {file.name}
                   </span>
 
                   <button
                     type="button"
                     onClick={() => removeFile(index)}
-                    className="text-gray-400 hover:text-red-400 ml-1 font-bold text-sm px-1"
+                    className="attachment-remove"
                     title="Remove file"
                   >
-                    ✕
+                    <X size={14} aria-hidden="true" />
                   </button>
                 </div>
               )
@@ -834,7 +859,7 @@ setMessages((previous) => {
       {/* INPUT AREA */}
 
       {(voiceError || voicePermissionError || voiceUnsupportedError) && (
-        <div className="mb-3 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+        <div className="composer-error">
           {voicePermissionError || voiceUnsupportedError || voiceError}
           <button
             type="button"
@@ -843,26 +868,28 @@ setMessages((previous) => {
               setVoicePermissionError(null);
               setVoiceUnsupportedError(null);
             }}
-            className="ml-3 text-red-300 hover:text-white font-bold"
+            className="composer-error-dismiss"
           >
             Dismiss
           </button>
         </div>
       )}
 
-      <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+      <div className="composer-controls">
 
-        {/* FILE BUTTON */}
+{/* FILE BUTTON */}
 
         <label
-          className={`bg-gray-700 text-white px-4 py-2 rounded ${
+          className={`composer-icon-button ${
             loading
-              ? "opacity-50 cursor-not-allowed"
-              : "cursor-pointer hover:bg-gray-600"
+              ? "is-disabled"
+              : ""
           }`}
           title="Attach file (PDF, image, or code file)"
+          aria-label="Attach file"
+          data-icon="file"
         >
-          📎
+          <FilePlus2 size={18} aria-hidden="true" />
 
           <input
             type="file"
@@ -876,14 +903,15 @@ setMessages((previous) => {
         {/* CAMERA BUTTON */}
 
         <label
-          className={`bg-gray-700 text-white px-4 py-2 rounded ${
+          className={`composer-icon-button ${
             loading || isRecording || isProcessingVoice || isSpeaking
-              ? "opacity-50 cursor-not-allowed"
-              : "cursor-pointer hover:bg-gray-600"
+              ? "is-disabled"
+              : ""
           }`}
           title="Take a photo"
+          aria-label="Take a photo"
         >
-          📷
+          <Camera size={18} aria-hidden="true" />
 
           <input
             type="file"
@@ -901,7 +929,7 @@ setMessages((previous) => {
           <button
             type="button"
             onClick={stopRecording}
-            className="bg-red-600 text-white px-4 py-2 rounded animate-pulse flex items-center gap-2"
+            className="composer-action-button composer-recording"
             title="Stop recording"
           >
             <span className="relative flex h-3 w-3">
@@ -914,41 +942,44 @@ setMessages((previous) => {
           <button
             type="button"
             disabled
-            className="bg-yellow-600 text-white px-4 py-2 rounded flex items-center gap-2 opacity-70"
+            className="composer-action-button is-processing"
             title="Processing voice"
           >
             <span className="animate-spin inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span>
             <span className="hidden sm:inline">Processing</span>
           </button>
-        ) : isSpeaking ? (
+) : isSpeaking ? (
           <button
             type="button"
             onClick={stopAudioPlayback}
-            className="bg-purple-600 text-white px-4 py-2 rounded flex items-center gap-2"
+            className="composer-action-button is-speaking"
             title="Stop audio"
+            aria-label="Stop audio"
           >
-            🔊, <span className="hidden sm:inline">Speaking</span>
+            <Volume2 size={17} aria-hidden="true" />
+            <span className="hidden sm:inline">Speaking</span>
           </button>
         ) : (
           <button
             type="button"
             onClick={startRecording}
             disabled={loading}
-            className={`bg-gray-700 text-white px-4 py-2 rounded ${
+            className={`composer-icon-button ${
               loading
-                ? "opacity-50 cursor-not-allowed"
-                : "cursor-pointer hover:bg-gray-600"
+                ? "is-disabled"
+                : ""
             }`}
             title="Record voice message"
+            aria-label="Record voice message"
           >
-            🎙️
+            <Mic size={18} aria-hidden="true" />
           </button>
         )}
 
         {/* TEXT INPUT */}
 
         <input
-          className="flex-1 min-w-0 p-2 rounded bg-gray-800 text-white text-sm md:text-base"
+          className="composer-input"
           placeholder={
             selectedFiles.length > 0
               ? `Ask something about ${selectedFiles.length} selected file(s)...`
@@ -978,29 +1009,32 @@ setMessages((previous) => {
           disabled={loading || isRecording || isProcessingVoice || isSpeaking}
         />
 
-        {/* SEND BUTTON */}
+{/* SEND BUTTON */}
 
         <button
     type="button"
     onClick={
         loading
-            ? () => setStopGeneration(true)
+            ? () => abortControllerRef.current?.abort()
             : sendMessage
     }
     disabled={
-        (loading || isRecording || isProcessingVoice || isSpeaking) &&
+        !loading &&
+        (isRecording || isProcessingVoice || isSpeaking) &&
         !input.trim() &&
         selectedFiles.length === 0
     }
-    className={
+    className={`composer-send-button ${
         loading
-            ? "bg-red-600 px-4 py-2 rounded text-white"
-            : "bg-blue-600 px-4 py-2 rounded text-white"
-    }
+            ? "is-stop"
+            : ""
+    }`}
 >
+    <Send size={16} aria-hidden="true" />
     {loading ? "⏹ Stop" : "🚀 Send"}
 </button>
 
+      </div>
       </div>
     </div>
   );
