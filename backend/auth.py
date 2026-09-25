@@ -1,5 +1,6 @@
 import os
 import secrets
+import logging
 
 from dotenv import load_dotenv
 from jose import jwt, JWTError
@@ -10,6 +11,7 @@ from fastapi import Security
 from database import get_conversation_owner
 
 load_dotenv()
+logger = logging.getLogger("MyGPT.Auth")
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
@@ -29,6 +31,7 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security)
 ):
     token = credentials.credentials
+    token_length = len(token)
 
     try:
         payload = jwt.decode(
@@ -40,14 +43,35 @@ def get_current_user(
         user_id = payload.get("user_id")
 
         if user_id is None:
+            logger.warning(
+                "AUTH_FAILURE reason=missing_user_id token_present=%s token_length=%s",
+                bool(token),
+                token_length,
+            )
             raise HTTPException(
                 status_code=401,
                 detail="Invalid token"
             )
 
-        return user_id
+        try:
+            return int(user_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "AUTH_FAILURE reason=invalid_user_id_claim token_present=%s token_length=%s",
+                bool(token),
+                token_length,
+            )
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-    except JWTError:
+    except HTTPException:
+        raise
+    except JWTError as exc:
+        logger.warning(
+            "AUTH_FAILURE reason=%s token_present=%s token_length=%s",
+            type(exc).__name__,
+            bool(token),
+            token_length,
+        )
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired token"

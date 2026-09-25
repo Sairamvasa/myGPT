@@ -19,7 +19,6 @@ app_module.app.dependency_overrides[app_module.get_current_user] = lambda: 8001
 try:
     with (
         patch.object(app_module, "verify_chat_ownership"),
-        patch.object(app_module, "save_message"),
     ):
         tc = TestClient(app_module.app)
 

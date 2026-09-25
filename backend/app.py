@@ -4,6 +4,8 @@ import tempfile
 import sqlite3
 import bcrypt
 import re
+import hashlib
+import uuid
 from decimal import Decimal, InvalidOperation
 from contextlib import asynccontextmanager
 from PIL import Image
@@ -26,7 +28,16 @@ from database import *
 from models import *
 from agents.agent import Agent
 from auth import get_current_user, verify_chat_ownership, JWT_SECRET_KEY, JWT_ALGORITHM
-from llm import ask_llm, ask_llm_routed, stream_llm, stream_llm_routed, LLMError, OLLAMA_MODEL, get_num_predict
+from llm import (
+    ask_llm,
+    ask_llm_routed,
+    stream_llm,
+    stream_llm_routed,
+    LLMError,
+    OLLAMA_MODEL,
+    get_num_predict,
+    get_routed_provider_metadata,
+)
 from perf_telemetry import create_context
 from agents.rag_verifier import is_answer_safe_for_context
 from file_utils import (
@@ -45,6 +56,20 @@ from rate_limiter import (
 )
 
 logger = logging.getLogger("MyGPT.API")
+
+
+def _message_diagnostic(message: str) -> str:
+    """Return a non-sensitive identifier for lifecycle diagnostics."""
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()[:12]
+
+
+def _log_chat_phase(trace_id: str, phase: str, **fields):
+    safe_fields = {
+        key: value
+        for key, value in fields.items()
+        if key not in {"message", "prompt", "token", "authorization", "api_key", "secret"}
+    }
+    logger.info("CHAT_LIFECYCLE trace_id=%s phase=%s %s", trace_id, phase, safe_fields)
 
 
 try:
@@ -115,7 +140,10 @@ def _fallback_current_info_answer(tool_results: str | None) -> str:
     value_lines = [
         line.strip().strip("*")
         for line in tool_results.splitlines()
-        if _CURRENT_INFO_VALUE_RE.search(line)
+        if any(
+            match.group("prefix") or match.group("suffix")
+            for match in _CURRENT_INFO_VALUE_RE.finditer(line)
+        )
     ]
     source_match = re.search(r"Source:\s*(\S+)", tool_results)
     source = source_match.group(1) if source_match else None
@@ -130,12 +158,55 @@ def _fallback_current_info_answer(tool_results: str | None) -> str:
 
 
 def _enforce_current_info_grounding(answer: str, tool_results: str | None) -> str:
-    answer_values = _extract_current_info_values(answer)
-    if not answer_values:
-        return answer
+    if (
+        not tool_results
+        or "could not be verified" in tool_results.lower()
+        or "no results" in tool_results.lower()
+    ):
+        return "I couldn't verify the current information from a live search."
 
+    stripped_answer = answer.strip()
+    if not stripped_answer or stripped_answer.endswith((":", "-", "—", "...")):
+        return _fallback_current_info_answer(tool_results)
+
+    answer_values = _extract_current_info_values(answer)
     source_values = _extract_current_info_values(tool_results)
+    if not answer_values:
+        if not source_values:
+            return answer
+        # A current-info answer without a verifiable value must not make an
+        # unsupported freshness claim.
+        freshness_claim = re.search(
+            r"\b(?:today|current|latest|now|live|as of)\b",
+            answer,
+            re.IGNORECASE,
+        )
+        return (
+            "I couldn't verify the current information from the retrieved "
+            "search results."
+            if freshness_claim
+            else answer
+        )
+
     if answer_values.issubset(source_values):
+        # Do not accept a date/source claim that is absent from retrieval.
+        claimed_dates = set(
+            re.findall(
+                r"\b(?:January|February|March|April|May|June|July|August|"
+                r"September|October|November|December)\s+\d{1,2},\s+\d{4}\b",
+                answer,
+                re.IGNORECASE,
+            )
+        )
+        if claimed_dates and not claimed_dates.issubset(
+            set(re.findall(
+                r"\b(?:January|February|March|April|May|June|July|August|"
+                r"September|October|November|December)\s+\d{1,2},\s+\d{4}\b",
+                tool_results,
+                re.IGNORECASE,
+            ))
+        ):
+            return "I couldn't verify the date associated with the current information."
         return answer
 
     return _fallback_current_info_answer(tool_results)
@@ -196,6 +267,7 @@ async def logging_middleware(request: Request, call_next):
     """Middleware to log all requests and responses."""
     import time
     start_time = time.monotonic()
+    request.state.trace_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
     
     try:
         response = await call_next(request)
@@ -369,11 +441,64 @@ def register(data: RegisterRequest, _rl: None = register_rate_limit):
         conn.close()
 
 
+@app.post("/login")
+def login(data: LoginRequest, _rl: None = login_rate_limit):
+    email = data.email.strip().lower()
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name, email, password_hash FROM users WHERE email = ?",
+            (email,),
+        )
+        user = cursor.fetchone()
+
+        if not user or not bcrypt.checkpw(
+            data.password.encode("utf-8"),
+            user[3].encode("utf-8"),
+        ):
+            logger.warning("AUTH_FAILURE reason=invalid_login email_present=%s", bool(email))
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+        user_id, name, stored_email, _password_hash = user
+        token_data = {
+            "user_id": int(user_id),
+            "email": stored_email,
+            "exp": datetime.utcnow() + timedelta(days=7),
+        }
+        access_token = jwt.encode(
+            token_data,
+            JWT_SECRET_KEY,
+            algorithm=JWT_ALGORITHM,
+        )
+
+        logger.info(
+            "AUTH_SUCCESS user_id_present=%s token_present=%s token_length=%s",
+            user_id is not None,
+            bool(access_token),
+            len(access_token),
+        )
+        return {
+            "success": True,
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": int(user_id),
+            "name": name,
+            "email": stored_email,
+        }
+    finally:
+        conn.close()
+
 
 @app.post("/new-chat")
 def new_chat(user_id: int = Depends(get_current_user)):
 
     chat_id = create_conversation(user_id, "New Chat")
+    logger.info(
+        "CHAT_LIFECYCLE phase=chat_created user_id_present=%s chat_id_present=%s",
+        user_id is not None,
+        chat_id is not None,
+    )
 
     return {
         "chat_id": chat_id,
@@ -382,9 +507,24 @@ def new_chat(user_id: int = Depends(get_current_user)):
     }
     
 @app.post("/chat")
-def chat(data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = chat_rate_limit):
+def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = chat_rate_limit):
 
     verify_chat_ownership(data.chat_id, user_id)
+    trace_id = getattr(request.state, "trace_id", None)
+    provider_name, provider_model = get_routed_provider_metadata()
+    _log_chat_phase(
+        trace_id,
+        "request_validated",
+        user_id_present=user_id is not None,
+        chat_id_present=data.chat_id is not None,
+        message_length=len(data.message),
+        message_hash=_message_diagnostic(data.message),
+        provider=provider_name,
+        model=provider_model,
+    )
+
+    save_message(data.chat_id, "user", data.message)
+    _log_chat_phase(trace_id, "user_persisted_before_agent", user_message_persisted=True)
 
     perf = create_context("chat", OLLAMA_MODEL)
     perf.rag_used = False
@@ -393,6 +533,19 @@ def chat(data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None 
         data.message,
         data.chat_id,
         user_id
+    )
+    _log_chat_phase(
+        trace_id,
+        "agent_complete",
+        action=result.get("action"),
+        history_count=len(result.get("history") or []),
+        memory_count=len(result.get("memories") or []),
+        rag_result_count=1 if result.get("context") else 0,
+        contextual_mode=bool(result.get("context")),
+        prompt_has_current_message=data.message in result.get("prompt", ""),
+        prompt_has_history=bool(result.get("history")),
+        provider=provider_name,
+        model=provider_model,
     )
     perf.rag_used = result.get("context") is not None
 
@@ -425,6 +578,13 @@ def chat(data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None 
                         "retry_after_seconds": e.retry_after,
                     },
                 )
+
+    if not answer or not answer.strip():
+        answer = (
+            "⚠️ I couldn't generate an answer for this request. "
+            "Please try again."
+        )
+    perf.output_length = len(answer)
     
     # Verify RAG answers against retrieved context
     if action == "rag" and result.get("context"):
@@ -433,21 +593,21 @@ def chat(data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None 
             # Fallback: provide a safe answer based only on context
             answer = f"Based on the uploaded document, I can see the code defines functions and variables. The exact output would require executing the code. The document shows: {result['context'][:500]}..."
 
-    if action == "current_info":
+    if action in ("current_info", "web_research"):
         answer = _enforce_current_info_grounding(answer, result.get("tool_results"))
     
     perf.emit()
 
     save_message(
         data.chat_id,
-        "user",
-        data.message
-    )
-
-    save_message(
-        data.chat_id,
         "assistant",
         answer
+    )
+    _log_chat_phase(
+        trace_id,
+        "assistant_persisted",
+        assistant_message_persisted=True,
+        response_status=200,
     )
 
     return {
@@ -761,6 +921,27 @@ def generate_image(
 def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = stream_rate_limit):
 
     verify_chat_ownership(data.chat_id, user_id)
+    trace_id = getattr(request.state, "trace_id", None)
+    provider_name, provider_model = get_routed_provider_metadata()
+    _log_chat_phase(
+        trace_id,
+        "stream_start",
+        action="pending",
+        provider=provider_name,
+        model=provider_model,
+    )
+    _log_chat_phase(
+        trace_id,
+        "request_validated",
+        user_id_present=user_id is not None,
+        chat_id_present=data.chat_id is not None,
+        message_length=len(data.message),
+        message_hash=_message_diagnostic(data.message),
+        provider=provider_name,
+        model=provider_model,
+    )
+    save_message(data.chat_id, "user", data.message)
+    _log_chat_phase(trace_id, "user_persisted_before_agent", user_message_persisted=True)
 
     perf = create_context("stream", OLLAMA_MODEL)
 
@@ -769,13 +950,25 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
         data.chat_id,
         user_id
     )
+    _log_chat_phase(
+        trace_id,
+        "agent_complete",
+        action=result.get("action"),
+        history_count=len(result.get("history") or []),
+        memory_count=len(result.get("memories") or []),
+        rag_result_count=1 if result.get("context") else 0,
+        contextual_mode=bool(result.get("context")),
+        prompt_has_current_message=data.message in result.get("prompt", ""),
+        prompt_has_history=bool(result.get("history")),
+        provider=provider_name,
+        model=provider_model,
+    )
     perf.rag_used = result.get("context") is not None
 
     # If agent returned a direct answer
     if result.get("answer"):
 
         # Save immediately for direct responses
-        save_message(data.chat_id, "user", data.message)
         save_message(data.chat_id, "assistant", result["answer"])
         perf.emit()
 
@@ -805,16 +998,30 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
     async def generate():
 
         full_answer = ""
+        chunk_count = 0
         had_error = False
         client_disconnected = False
-        buffer_for_grounding = action == "current_info"
+        fallback_answer = "I couldn't generate an answer for this request. Please try again."
+        buffer_for_grounding = action in ("current_info", "web_research")
 
         try:
             for chunk in stream_llm_routed(prompt, action, perf_context=perf, num_predict=num_predict):
                 if await request.is_disconnected():
                     client_disconnected = True
                     break
+                if not chunk:
+                    continue
+                chunk_count += 1
                 full_answer += chunk
+                if chunk_count == 1:
+                    _log_chat_phase(
+                        trace_id,
+                        "first_backend_chunk",
+                        action=action,
+                        provider=provider_name,
+                        model=provider_model,
+                        chunk_length=len(chunk),
+                    )
                 if not buffer_for_grounding:
                     yield chunk
         except LLMError as e:
@@ -824,21 +1031,37 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
             # For current_info failures, show the retrieved search results to the user
             if e.kind == "current_info_failed":
                 tool_results = result.get("tool_results")
+                if buffer_for_grounding and full_answer:
+                    yield full_answer
                 if tool_results and "CURRENT INFORMATION SEARCH RESULTS" in tool_results:
                     # Extract and present the search results
-                    yield f"\n\n---\n\n⚠️ {e.user_message}\n\n**Retrieved Search Results:**\n{tool_results}"
+                    error_text = (
+                        f"\n\n---\n\n⚠️ {e.user_message}\n\n"
+                        f"**Retrieved Search Results:**\n{tool_results}"
+                    )
                 else:
-                    yield f"\n\n---\n\n⚠️ {e.user_message}"
+                    error_text = f"\n\n---\n\n⚠️ {e.user_message}"
+                yield error_text
+                full_answer += error_text
+                fallback_answer = ""
             else:
-                yield "\n\n---\n\n⚠️ LLM request failed."
+                fallback_answer = "\n\n---\n\n⚠️ LLM request failed."
+                if buffer_for_grounding and full_answer:
+                    yield full_answer
+                yield fallback_answer
+                full_answer += fallback_answer
         except Exception as e:
             had_error = True
             perf.add_error("unknown_error")
             perf.emit()
-            yield (
+            fallback_answer = (
                 "\n\n---\n\n⚠️ The AI service is temporarily "
                 "unavailable. Please try again."
             )
+            if buffer_for_grounding and full_answer:
+                yield full_answer
+            yield fallback_answer
+            full_answer += fallback_answer
         finally:
             if buffer_for_grounding and not had_error and full_answer and not client_disconnected:
                 full_answer = _enforce_current_info_grounding(
@@ -847,23 +1070,35 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
                 )
                 yield full_answer
 
-            perf.emit()
-            # Save messages in finally so they are persisted even if the
-            # client disconnects before streaming finishes.
-            if data.message:
-                save_message(
-                    data.chat_id,
-                    "user",
-                    data.message
-                )
+            if not full_answer.strip() and not client_disconnected:
+                full_answer = fallback_answer.strip()
+                yield full_answer
 
-            # Only persist the assistant reply when we actually produced one
+            perf.emit()
+            # The user turn was persisted before agent execution. Only persist
+            # the assistant reply when we actually produced one
             # and it wasn't an intentional client cancellation.
-            if not had_error and full_answer and not client_disconnected:
+            if full_answer.strip() and not client_disconnected:
+                perf.output_length = len(full_answer)
+                _log_chat_phase(
+                    trace_id,
+                    "stream_finished",
+                    action=action,
+                    provider=provider_name,
+                    model=provider_model,
+                    chunk_count=chunk_count,
+                    answer_length=len(full_answer),
+                )
                 save_message(
                     data.chat_id,
                     "assistant",
                     full_answer
+                )
+                _log_chat_phase(
+                    trace_id,
+                    "assistant_persisted",
+                    assistant_message_persisted=True,
+                    response_status=200,
                 )
 
         # Update conversation title after the first exchange

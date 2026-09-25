@@ -10,9 +10,10 @@ export default function MessageList({ messages = [] }: Props) {
     <div className="message-list">
       {messages.map((msg, index) => (
         <Message
-          key={`${msg.role}-${index}`}
+          key={msg.id ?? `${msg.role}-${index}`}
           role={msg.role}
           content={msg.content}
+          isStreaming={msg.isStreaming}
         />
       ))}
     </div>

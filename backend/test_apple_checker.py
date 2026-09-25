@@ -1,7 +1,9 @@
 """Focused tests for the Apple subtraction checker in test_evaluation.py."""
 import os
-import sys
 import re
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -11,48 +13,53 @@ def check_apples(answer, criteria):
         return True, "Correct arithmetic (answer contains 3)"
     return False, "Wrong arithmetic (answer does not contain 3)"
 
-PASS = 0
-FAIL = 0
+CASES = [
+    pytest.param("5 - 2 = 3", True, id="arithmetic"),
+    pytest.param("3 apples remain", True, id="apples"),
+    pytest.param("There are 3 left", True, id="left"),
+    pytest.param("The answer is 3.", True, id="punctuation"),
+    pytest.param("3", True, id="standalone"),
+    pytest.param("5", False, id="five"),
+    pytest.param("2", False, id="two"),
+    pytest.param("4", False, id="four"),
+    pytest.param("10", False, id="ten"),
+    pytest.param("I don't know", False, id="unknown"),
+    pytest.param("", False, id="empty"),
+    pytest.param("The answer is 30.", False, id="reject-30"),
+]
 
-def check(label, answer, expected_pass):
-    global PASS, FAIL
-    passed, detail = check_apples(answer, None)
-    if passed == expected_pass:
-        PASS += 1
-        print(f"  PASS: {label}")
-    else:
-        FAIL += 1
-        print(f"  FAIL: {label}")
-        print(f"        Answer: {answer!r}")
-        print(f"        Expected pass={expected_pass}, Got pass={passed} ({detail})")
 
-print("=" * 70)
-print("APPLE SUBTRACTION CHECKER TESTS")
-print("=" * 70)
+@pytest.mark.parametrize("answer, expected_pass", CASES)
+def test_apple_checker(answer, expected_pass):
+    passed, _detail = check_apples(answer, None)
+    assert passed is expected_pass
 
-print("\n--- Should PASS (answer contains standalone 3) ---")
-check("5 - 2 = 3", "5 - 2 = 3", True)
-check("3 apples remain", "3 apples remain", True)
-check("There are 3 left", "There are 3 left", True)
-check("The answer is 3.", "The answer is 3.", True)
-check("3", "3", True)
 
-print("\n--- Should FAIL (answer does not contain 3) ---")
-check("5", "5", False)
-check("2", "2", False)
-check("4", "4", False)
-check("10", "10", False)
-check("I don't know", "I don't know", False)
+def _run_cli() -> int:
+    print("=" * 70)
+    print("APPLE SUBTRACTION CHECKER TESTS")
+    print("=" * 70)
 
-print("\n--- Edge cases ---")
-check("Empty string", "", False)
-check("30 should be rejected (not 3)", "The answer is 30.", False)  # \b3\b correctly rejects "30"
+    failures = 0
+    for case in CASES:
+        answer = case.values[0]
+        expected_pass = case.values[1]
+        passed, detail = check_apples(answer, None)
+        label = case.id
+        if passed == expected_pass:
+            print(f"  PASS: {label}")
+        else:
+            failures += 1
+            print(f"  FAIL: {label}")
+            print(f"        Answer: {answer!r}")
+            print(f"        Expected pass={expected_pass}, Got pass={passed} ({detail})")
 
-print("\n" + "=" * 70)
-print(f"RESULTS: {PASS} passed, {FAIL} failed, {PASS + FAIL} total")
-if FAIL == 0:
-    print("ALL CHECKER TESTS PASSED")
-else:
-    print(f"{FAIL} TEST(S) FAILED")
-print("=" * 70)
-sys.exit(0 if FAIL == 0 else 1)
+    print("\n" + "=" * 70)
+    print(f"RESULTS: {len(CASES) - failures} passed, {failures} failed, {len(CASES)} total")
+    print("ALL CHECKER TESTS PASSED" if failures == 0 else f"{failures} TEST(S) FAILED")
+    print("=" * 70)
+    return 0 if failures == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_cli())

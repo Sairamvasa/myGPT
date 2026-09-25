@@ -32,6 +32,7 @@ class PerfContext:
 
     __slots__ = [
         "request_id", "action", "model", "rag_used",
+        "routing_ms", "output_length",
         "retrieval_ms", "prompt_build_ms",
         "ollama_ttft_ms", "ollama_total_ms",
         "prompt_eval_count", "prompt_eval_duration_ms",
@@ -46,6 +47,8 @@ class PerfContext:
         self.action = action
         self.model = model
         self.rag_used = False
+        self.routing_ms = 0.0
+        self.output_length = 0
         self.retrieval_ms = 0.0
         self.prompt_build_ms = 0.0
         self.ollama_ttft_ms = 0.0
@@ -89,6 +92,7 @@ class PerfContext:
             "action": self.action,
             "model": self.model,
             "rag_used": self.rag_used,
+            "routing_ms": round(self.routing_ms, 1),
             "retrieval_ms": round(self.retrieval_ms, 1),
             "prompt_build_ms": round(self.prompt_build_ms, 1),
             "ollama_ttft_ms": round(self.ollama_ttft_ms, 1),
@@ -98,6 +102,7 @@ class PerfContext:
             "eval_count": self.eval_count,
             "eval_duration_ms": round(self.eval_duration_ms, 1),
             "backend_total_ms": round(self.backend_total_ms, 1),
+            "output_length": self.output_length,
         }
         if self.errors:
             entry["errors"] = self.errors

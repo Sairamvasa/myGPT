@@ -27,6 +27,21 @@ function getApiErrorMessage(payload: unknown, fallback: string): string {
   return typeof body.message === "string" ? body.message : fallback;
 }
 
+function clearStoredAuthentication(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user");
+  }
+}
+
+async function parseApiResponse(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return response.text();
+}
+
 
   // ==============================
 // AUTH
@@ -49,15 +64,17 @@ export async function registerUser(
     }),
   });
 
-  const data = await response.json();
+  const data = (await parseApiResponse(response)) as Record<string, unknown>;
 
   if (!response.ok || data.success === false) {
-    throw new Error(data.message || data.detail || "Registration failed");
+    throw new Error(getApiErrorMessage(data, "Registration failed"));
   }
 
   // Save JWT token and user info (same as login)
-  if (data.access_token) {
+  if (typeof data.access_token === "string" && data.access_token.trim()) {
     localStorage.setItem("access_token", data.access_token);
+  } else {
+    throw new Error("Registration response did not include an access token.");
   }
 
   if (data.user_id) {
@@ -90,13 +107,16 @@ export async function loginUser(
     }),
   });
 
-  const data = await response.json();
+  const data = (await parseApiResponse(response)) as Record<string, unknown>;
 
   if (!response.ok || data.success === false) {
-    throw new Error(data.message || data.detail || "Login failed");
+    throw new Error(getApiErrorMessage(data, "Login failed"));
   }
 
   // Save JWT token
+  if (typeof data.access_token !== "string" || !data.access_token.trim()) {
+    throw new Error("Login response did not include an access token.");
+  }
   localStorage.setItem("access_token", data.access_token);
 
   // Save user information
@@ -140,9 +160,33 @@ function authHeaders() {
   };
 }
 
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {}
+): Promise<Response> {
+  const response = await fetch(input, {
+    ...init,
+    headers: {
+      ...authHeaders(),
+      ...(init.headers || {}),
+    },
+  });
+
+  if (response.status === 401) {
+    clearStoredAuthentication();
+  }
+  return response;
+}
+
 function bearerHeaders(): HeadersInit {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function requestDiagnosticHeaders(): HeadersInit {
+  return {
+    "X-Request-ID": crypto.randomUUID(),
+  };
 }
 // ==============================
 // ASK AI
@@ -158,7 +202,7 @@ export async function askAI(
 
   const response = await fetch(`${API_URL}/chat`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: { ...authHeaders(), ...requestDiagnosticHeaders() },
     body: JSON.stringify({
       message,
       chat_id,
@@ -206,9 +250,7 @@ export async function getHistory(chatId: number) {
 // ==============================
 
 export async function getConversations() {
-  const response = await fetch(`${API_URL}/conversations`, {
-    headers: authHeaders(),
-  });
+  const response = await authenticatedFetch(`${API_URL}/conversations`);
 
   if (!response.ok) {
     throw new Error("Failed to load conversations");
@@ -223,9 +265,9 @@ export async function getConversations() {
 // ==============================
 
 export async function createNewChat() {
-  const response = await fetch(`${API_URL}/new-chat`, {
+  const response = await authenticatedFetch(`${API_URL}/new-chat`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: requestDiagnosticHeaders(),
   });
 
   if (!response.ok) {
@@ -362,9 +404,21 @@ export async function streamAI(
         }
     );
 
+    console.info("REQUEST_SENT", {
+      endpoint: "/stream",
+      status: response.status,
+    });
+
     if (!response.ok) {
+        if (response.status === 401) {
+          clearStoredAuthentication();
+        }
         const errorText = await response.text().catch(() => `HTTP ${response.status}`);
         throw new Error(`Stream request failed (${response.status}): ${errorText}`);
+    }
+
+    if (!response.body) {
+        throw new Error("The stream response did not include a readable body.");
     }
 
     return response.body;

@@ -73,6 +73,25 @@ def decide(user_message: str):
     if contains_phrase(CURRENT_INFO_PHRASES):
         return ACTION_CURRENT_INFO
 
+    # General freshness routing: a request with a freshness marker and a
+    # factual/current-data subject must use the guarded live-search path.
+    freshness_marker = re.search(
+        r"\b(?:today|current|latest|now|recent|live)\b",
+        message,
+    )
+    current_subject = re.search(
+        r"\b(?:price|prices|news|weather|stock|stocks|"
+        r"exchange\s+rate|currency\s+rate|events?|petrol|diesel|"
+        r"fuel|bitcoin|crypto|score|scores)\b",
+        message,
+    )
+    if (
+        freshness_marker
+        and current_subject
+        and not re.search(r"\b(?:latest|recent)\s+\w*\s*news\b", message)
+    ):
+        return ACTION_CURRENT_INFO
+
     # 3. Web Research - broader research queries (before general web)
     WEB_RESEARCH_PHRASES = [
         "latest news", "recent news", "breaking news", "news about",
@@ -179,7 +198,11 @@ def decide(user_message: str):
         "project owner", "project developer", "who wrote this", "who created this",
         "about the project", "about the file", "about the document",
     ]
-    if contains_phrase(DOC_KEYWORDS):
+    contextual_result_question = re.search(
+        r"\b(?:what|how|why|where|which)\b.*\b(?:output|result|return(?:s)?|value)\b",
+        message,
+    )
+    if contains_phrase(DOC_KEYWORDS) or contextual_result_question:
         return ACTION_RAG
 
     # 7. Factual questions where freshness matters -> web
@@ -238,7 +261,11 @@ def decide(user_message: str):
         return ACTION_IMAGE_GEN
 
     # 11. Memory
-    if contains_phrase(["remember", "who am i", "my name", "what do you know about me", "my preferences"]):
+    if contains_phrase([
+        "remember", "who am i", "my name", "what do you know about me",
+        "my preferences", "my college", "my school", "my job",
+        "my project", "what did i tell you",
+    ]):
         return ACTION_MEMORY
 
     # 12. Direct arithmetic / calculation intent -> python

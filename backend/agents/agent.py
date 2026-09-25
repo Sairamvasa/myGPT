@@ -1,4 +1,5 @@
 import re
+import time
 from agents.memory_extractor import extract_memories
 from agents.memory_search import search_memories
 from agents.prompt_builder import build_prompt
@@ -100,9 +101,12 @@ class Agent:
     Orchestrates Memory, RAG, Web Search, Code Interpreter, and LLM reasoning.
     """
 
-    def run(self, message: str, chat_id=None, user_id=None):
+    def run(self, message: str, chat_id=None, user_id=None, perf_context=None):
+        started = time.perf_counter()
         # 1. Decide action / tools needed
         action = decide(message)
+        if perf_context is not None:
+            perf_context.routing_ms = (time.perf_counter() - started) * 1000
         tool_results = None
         direct_answer = None
 
@@ -145,13 +149,32 @@ class Agent:
                 }
 
         # 3. Retrieve Contexts
+        retrieval_started = time.perf_counter()
         history = get_history(chat_id) if chat_id is not None else []
-        memories = search_memories(message, user_id) if user_id is not None else []
+        # The API persists the current user turn before invoking the agent so
+        # failures still leave a consistent conversation. Keep only prior
+        # turns in the history section because the current request is added
+        # explicitly by build_prompt().
+        if history and history[-1] == ("user", message):
+            history = history[:-1]
+        memories = (
+            search_memories(message, user_id, action=action)
+            if user_id is not None
+            else []
+        )
         context = None
         rag_unavailable = False
 
+        contextual_followup = bool(
+            re.search(
+                r"\b(?:what|how|why|where|which|does|is|are|explain|describe)\b.*\b(?:this|that|it|here|there|output|result|return|returns|value|function|code|script|file)\b",
+                message,
+                re.IGNORECASE,
+            )
+        )
+
         # Check RAG for rag, code_explanation actions (when user asks about uploaded files)
-        if action in (ACTION_RAG, ACTION_CODE_EXPLANATION) and user_id is not None:
+        if (action in (ACTION_RAG, ACTION_CODE_EXPLANATION) or contextual_followup) and user_id is not None:
             try:
                 from rag import search_pdf
                 context = search_pdf(message, user_id)
@@ -167,6 +190,8 @@ class Agent:
             # to prevent memory contamination of grounded answers.
             if context:
                 memories = []
+                if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE):
+                    action = ACTION_RAG
 
         # For non-greeting chat messages without history/memories, use plain prompt
         if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE) and not history and not memories:
@@ -184,7 +209,10 @@ class Agent:
         if action in (ACTION_WEB, ACTION_CURRENT_INFO, ACTION_WEB_RESEARCH):
             print(f"[Agent Tool] Executing Web Search for: {message}")
             search_result = web_search(message, max_results=5)
-            results = search_result["results"]
+            results = [
+                item for item in search_result["results"]
+                if item.get("title") and item.get("body") and item.get("link")
+            ]
             if results:
                 web_text = "\n\n".join([
                     f"**{item['title']}**\n{item['body']}\nSource: {item['link']}"
@@ -192,18 +220,20 @@ class Agent:
                 ])
                 if action == ACTION_CURRENT_INFO:
                     tool_results = (
-                        f"CURRENT INFORMATION SEARCH RESULTS (use these for up-to-date facts):\n{web_text}\n\n"
+                        f"CURRENT INFORMATION SEARCH RESULTS (retrieved at {get_current_time()}):\n{web_text}\n\n"
                         f"IMPORTANT: Base your answer ONLY on the search results above. "
                         f"Cite sources with [Source: URL] format. "
                         f"Do NOT use your training knowledge for current prices, rates, weather, or news. "
-                        f"If the search results don't contain the answer, say so honestly."
+                        f"Do not claim a value or date that is not present in the search results. "
+                        f"If the search results don't contain a complete answer, say so honestly."
                     )
                 elif action == ACTION_WEB_RESEARCH:
                     tool_results = (
-                        f"WEB RESEARCH RESULTS:\n{web_text}\n\n"
-                        f"Synthesize information from the sources above. "
+                        f"CURRENT WEB RESEARCH RESULTS (retrieved at {get_current_time()}):\n"
+                        f"{web_text}\n\n"
+                        f"Use only the retrieved sources for recent/current claims. "
                         f"Cite sources with [Source: URL] format. "
-                        f"Distinguish between retrieved facts and your analysis."
+                        f"Do not claim a fact or date that is absent from the sources."
                     )
                 else:
                     tool_results = f"Web Search Results:\n{web_text}"
@@ -223,7 +253,7 @@ class Agent:
                     f"returned={search_result['returned']}]"
                 )
             else:
-                if action == ACTION_CURRENT_INFO:
+                if action in (ACTION_CURRENT_INFO, ACTION_WEB_RESEARCH):
                     tool_results = (
                         "Web search returned no results for this current information query. "
                         "Do not fabricate current prices, rates, or values. "
@@ -338,6 +368,9 @@ class Agent:
                 )
 
         # 5. Assemble Structured Context Prompt
+        if perf_context is not None:
+            perf_context.retrieval_ms += (time.perf_counter() - retrieval_started) * 1000
+            prompt_started = time.perf_counter()
         prompt = build_prompt(
             question=message,
             history=history,
@@ -345,6 +378,8 @@ class Agent:
             context=context,
             tool_results=tool_results
         )
+        if perf_context is not None:
+            perf_context.prompt_build_ms = (time.perf_counter() - prompt_started) * 1000
 
         return {
             "prompt": prompt,

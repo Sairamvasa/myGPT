@@ -76,6 +76,9 @@ export default function Home() {
       );
     } catch (error) {
       console.error("Failed to load conversations:", error);
+      if (!getToken()) {
+        setIsLoggedIn(false);
+      }
     }
   }, []);
 
@@ -167,6 +170,9 @@ export default function Home() {
       await loadConversations();
     } catch (error) {
       console.warn("New chat pre-creation deferred to first message:", error);
+      if (!getToken()) {
+        setIsLoggedIn(false);
+      }
     }
   }
 

@@ -9,6 +9,7 @@ import { Bot, Check, Copy, UserRound } from "lucide-react";
 type Props = {
   role: "user" | "assistant";
   content: string;
+  isStreaming?: boolean;
 };
 
 const getTextContent = (node: unknown): string => {
@@ -87,7 +88,7 @@ function CopyButton({ value, className = "" }: CopyButtonProps) {
   );
 }
 
-export default function Message({ role, content }: Props) {
+export default function Message({ role, content, isStreaming = false }: Props) {
   const isUser = role === "user";
 
   return (
@@ -137,6 +138,12 @@ export default function Message({ role, content }: Props) {
               >
                 {content}
               </ReactMarkdown>
+              {isStreaming && (
+                <span
+                  className="streaming-cursor"
+                  aria-hidden="true"
+                />
+              )}
             </div>
           )}
         </div>

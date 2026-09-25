@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 
 import ollama
 from agents.prompts import SYSTEM_PROMPT
+from providers.base import ProviderError
+from providers.registry import configure_providers_from_env
 
 logger = logging.getLogger("MyGPT.LLM")
 
@@ -19,6 +21,23 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-1.5-flash")
 
 _gemini_client = None
+_provider_registry = None
+
+
+def get_routed_provider_metadata() -> tuple[str | None, str | None]:
+    """Return safe active routing metadata for request diagnostics."""
+    global _provider_registry
+    if _provider_registry is None:
+        _provider_registry = configure_providers_from_env()
+
+    primary_name = _provider_registry._primary_provider
+    primary = (
+        _provider_registry._providers.get(primary_name)
+        if primary_name
+        else None
+    )
+    config = getattr(primary, "config", None)
+    return primary_name, getattr(config, "model", None)
 
 # Gemini retry configuration
 GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
@@ -92,7 +111,7 @@ _RAG_FACTUAL_PATTERNS = (
     "what is the output",
     "what is the result",
     "what does this print",
-    "what does it print",
+    "what does i  t print",
     "what is the value",
     "what is the answer",
     "what is the return value",
@@ -460,27 +479,29 @@ def ask_gemini(prompt: str, perf_context=None, action: Optional[str] = None) -> 
 
 
 def ask_llm_routed(prompt: str, action: str, perf_context=None, num_predict: Optional[int] = None) -> str:
-    """Route to the best available model based on action type."""
-    provider, model = _get_model_for_action(action)
-    
-    if provider == "gemini":
-        try:
-            return ask_gemini(prompt, perf_context, action)
-        except LLMError as e:
-            logger.warning("Gemini failed for action '%s': %s", action, e)
-            # For current_info, do NOT fall back to Ollama - it would produce stale answers
-            if action == "current_info":
-                raise LLMError(
-                    "current_info_failed",
-                    "Unable to synthesize current information. The search results are available but the AI synthesis service is unavailable.",
-                    503,
-                    retry_after=30
-                )
-            # For other actions, fall back to Ollama
-            logger.info("Falling back to Ollama for action '%s'", action)
-            return ask_llm(prompt, model=OLLAMA_CODE_MODEL if action == "code" else OLLAMA_MODEL, perf_context=perf_context, num_predict=num_predict)
-    
-    return ask_llm(prompt, model=model, perf_context=perf_context, num_predict=num_predict)
+    """Route through the configured provider registry."""
+    global _provider_registry
+    if _provider_registry is None:
+        _provider_registry = configure_providers_from_env()
+
+    try:
+        return _provider_registry.execute_with_fallback(
+            "generate",
+            prompt,
+            num_predict=num_predict,
+            temperature=OLLAMA_TEMPERATURE,
+            top_p=OLLAMA_TOP_P,
+            primary_only=(action == "current_info"),
+        )
+    except ProviderError as exc:
+        if action == "current_info":
+            raise LLMError(
+                "current_info_failed",
+                "Unable to synthesize current information. The search results are available but the AI synthesis service is unavailable.",
+                503,
+                retry_after=30,
+            ) from exc
+        raise LLMError(exc.kind, exc.user_message, exc.status_code, exc.retry_after) from exc
 
 
 def _encode_image_to_base64(image_path: str) -> str:
@@ -716,26 +737,26 @@ def stream_gemini(prompt: str, perf_context=None, action: Optional[str] = None):
 
 
 def stream_llm_routed(prompt: str, action: str, perf_context=None, num_predict: Optional[int] = None):
-    """Route to the best available model for streaming based on action type."""
-    provider, model = _get_model_for_action(action)
-    
-    if provider == "gemini":
-        try:
-            yield from stream_gemini(prompt, perf_context, action)
-            return
-        except LLMError as e:
-            logger.warning("Gemini stream failed for action '%s': %s", action, e)
-            # For current_info, do NOT fall back to Ollama - it would produce stale answers
-            if action == "current_info":
-                raise LLMError(
-                    "current_info_failed",
-                    "Unable to synthesize current information. The search results are available but the AI synthesis service is unavailable.",
-                    503,
-                    retry_after=30
-                )
-            # For other actions, fall back to Ollama
-            logger.info("Falling back to Ollama stream for action '%s'", action)
-            yield from stream_llm(prompt, model=model, perf_context=perf_context, num_predict=num_predict)
-            return
-    
-    yield from stream_llm(prompt, model=model, perf_context=perf_context, num_predict=num_predict)
+    """Route streaming through the configured provider registry."""
+    global _provider_registry
+    if _provider_registry is None:
+        _provider_registry = configure_providers_from_env()
+
+    try:
+        yield from _provider_registry.execute_with_fallback(
+            "stream_generate",
+            prompt,
+            num_predict=num_predict,
+            temperature=OLLAMA_TEMPERATURE,
+            top_p=OLLAMA_TOP_P,
+            primary_only=(action == "current_info"),
+        )
+    except ProviderError as exc:
+        if action == "current_info":
+            raise LLMError(
+                "current_info_failed",
+                "Unable to synthesize current information. The search results are available but the AI synthesis service is unavailable.",
+                503,
+                retry_after=30,
+            ) from exc
+        raise LLMError(exc.kind, exc.user_message, exc.status_code, exc.retry_after) from exc

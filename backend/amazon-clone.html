@@ -1,0 +1,246 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AmazonClone - Shop Like Amazon</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+        body { font-family: 'Inter', system_ui, sans-serif; }
+        .hero-bg {
+            background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.4)), url('https://picsum.photos/id/1015/2000/800');
+            background-size: cover;
+            background-position: center;
+        }
+        .product-card {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .product-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        }
+        .category-btn {
+            transition: all 0.2s ease;
+        }
+        .category-btn.active {
+            background-color: #f59e0b;
+            color: white;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+
+<!-- Navbar -->
+<nav class="bg-white border-b sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4">
+        <div class="flex items-center justify-between h-16">
+            <div onclick="window.location.reload()" class="flex items-center cursor-pointer">
+                <span class="text-4xl font-black text-amber-500 tracking-tighter">a</span>
+                <span class="text-3xl font-bold text-gray-900 ml-1">mazon</span>
+            </div>
+            
+            <div class="flex-1 max-w-2xl mx-8">
+                <div class="relative">
+                    <input id="search-input" onkeyup="handleSearch()" 
+                           type="text" placeholder="Search Amazon" 
+                           class="w-full px-6 py-3 border border-gray-300 rounded-full focus:outline-none focus:border-amber-500 text-lg">
+                    <button onclick="handleSearch()" 
+                            class="absolute right-3 top-1/2 -translate-y-1/2 bg-amber-500 text-white p-3 rounded-full hover:bg-amber-600">
+                        <i class="fas fa-search"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-6">
+                <div class="flex items-center gap-1 hover:text-amber-500 cursor-pointer transition-colors">
+                    <i class="fas fa-user text-2xl"></i>
+                    <div><p class="text-xs text-gray-500">Hello, John</p><p class="text-sm font-medium">Account &amp; Lists</p></div>
+                </div>
+                <div class="flex items-center gap-1 hover:text-amber-500 cursor-pointer transition-colors relative">
+                    <i class="fas fa-shopping-cart text-2xl"></i>
+                    <span id="cart-count" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">0</span>
+                    <div><p class="text-xs text-gray-500">Cart</p><p id="cart-text" class="text-sm font-medium">0 items</p></div>
+                </div>
+                <div onclick="alert('Currency selector opened (demo)')" class="flex items-center gap-1 hover:text-amber-500 cursor-pointer transition-colors">
+                    <i class="fas fa-globe text-2xl"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Category Navigation -->
+    <div class="bg-gray-100 border-t">
+        <div class="max-w-7xl mx-auto px-4">
+            <div id="category-nav" class="flex items-center gap-8 overflow-x-auto py-4 whitespace-nowrap"></div>
+        </div>
+    </div>
+</nav>
+
+<!-- Hero Banner -->
+<div class="hero-bg h-96 flex items-center text-white">
+    <div class="max-w-7xl mx-auto px-4">
+        <div class="max-w-xl">
+            <h1 class="text-5xl font-bold mb-4 leading-tight">Everyday low prices</h1>
+            <p class="text-xl mb-8">Save up to 50% on your first order when you shop today.</p>
+            <button onclick="alert('Shop now clicked! (demo)')" 
+                    class="bg-white text-black px-8 py-4 rounded-lg font-semibold text-lg hover:bg-gray-100 transition-colors">
+                Shop now
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="max-w-7xl mx-auto px-4 py-8 flex gap-8">
+    <!-- Categories Sidebar -->
+    <div class="w-56 flex-shrink-0">
+        <div class="bg-white rounded-2xl shadow-sm p-6">
+            <h2 class="font-semibold text-lg mb-6 flex items-center gap-2">
+                <i class="fas fa-bars"></i> Shop by Category
+            </h2>
+            <div id="sidebar-categories" class="space-y-1"></div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="flex-1">
+        <div class="bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-3xl p-8 mb-8 flex items-center justify-between">
+            <div>
+                <div class="uppercase tracking-widest text-sm font-medium mb-2">Special Offer</div>
+                <h2 class="text-4xl font-bold">Up to 40% off</h2>
+                <p class="mt-2 text-xl">on selected electronics</p>
+            </div>
+            <button onclick="alert('Deals clicked!')" 
+                    class="bg-white text-amber-600 px-10 py-4 rounded-2xl font-semibold hover:scale-105 transition-transform">
+                Shop Deals
+            </button>
+        </div>
+
+        <div class="flex justify-between items-end mb-6">
+            <h2 class="text-2xl font-semibold">Recommended for you</h2>
+        </div>
+
+        <div id="products-grid" class="grid grid-cols-4 gap-6"></div>
+    </div>
+</div>
+
+<!-- Footer -->
+<footer class="bg-white border-t mt-16 py-12">
+    <div class="max-w-7xl mx-auto px-4 grid grid-cols-5 gap-8">
+        <div>
+            <div class="flex items-center gap-1 text-amber-500 text-3xl font-black mb-4">
+                <span>a</span> mazon
+            </div>
+            <p class="text-sm text-gray-500">© 2024 AmazonClone Demo</p>
+        </div>
+        <!-- More footer links... (shortened for space) -->
+    </div>
+</footer>
+
+<!-- Product Modal -->
+<div id="product-modal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div onclick="event.stopImmediatePropagation()" class="bg-white rounded-3xl max-w-lg w-full mx-4 overflow-hidden">
+        <div class="p-6" id="modal-content"></div>
+        <div class="bg-gray-50 border-t p-6 flex gap-4">
+            <button onclick="closeModal()" class="flex-1 py-4 text-gray-700 font-medium border border-gray-300 rounded-2xl">Close</button>
+            <button onclick="addToCartFromModal()" class="flex-1 py-4 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-2xl">Add to Cart</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="hidden fixed bottom-6 right-6 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3">
+    <i class="fas fa-check-circle text-green-400"></i>
+    <span id="toast-text" class="font-medium"></span>
+</div>
+
+<script>
+// Products data
+const products = [
+    {id:1, name:"Sony WH-1000XM5 Wireless Headphones", price:348, category:"Electronics", img:"https://picsum.photos/id/201/300/200"},
+    {id:2, name:"Samsung Galaxy S23 Ultra", price:1299, category:"Electronics", img:"https://picsum.photos/id/201/300/200"},
+    {id:3, name:"Levi's 501 Original Fit Jeans", price:69, category:"Fashion", img:"https://picsum.photos/id/29/300/200"},
+    {id:4, name:"Kindle Paperwhite (11th Gen)", price:129, category:"Books", img:"https://picsum.photos/id/160/300/200"},
+    {id:5, name:"Dyson V15 Detect Cordless Vacuum", price:649, category:"Home & Kitchen", img:"https://picsum.photos/id/201/300/200"},
+    {id:6, name:"The Ordinary Multi-Peptide Serum", price:39, category:"Beauty", img:"https://picsum.photos/id/29/300/200"},
+    {id:7, name:"Apple Watch Series 9", price:399, category:"Electronics", img:"https://picsum.photos/id/160/300/200"},
+    {id:8, name:"Logitech MX Master 3S Mouse", price:99, category:"Electronics", img:"https://picsum.photos/id/29/300/200"}
+];
+
+let cart = [];
+let selectedProductForModal = null;
+
+// Render products
+function renderProducts(filteredProducts) {
+    const container = document.getElementById('products-grid');
+    container.innerHTML = '';
+    filteredProducts.forEach(product => {
+        const card = document.createElement('div');
+        card.className = 'product-card bg-white rounded-3xl overflow-hidden shadow-sm border border-gray-100 cursor-pointer';
+        card.innerHTML = `
+            <img src="${product.img}" class="w-full h-48 object-cover">
+            <div class="p-5">
+                <div class="flex items-start justify-between">
+                    <span class="inline-block bg-blue-100 text-blue-700 text-xs px-3 py-1 rounded-2xl">${product.category}</span>
+                    <span class="text-emerald-600 font-semibold text-lg">$${product.price}</span>
+                </div>
+                <h3 class="mt-4 font-semibold text-gray-900 leading-tight text-[15px] line-clamp-2">${product.name}</h3>
+                <button onclick="addToCart(${product.id}); event.stopPropagation();" 
+                        class="mt-6 w-full bg-white border border-gray-300 hover:border-amber-500 hover:bg-amber-50 py-3.5 rounded-2xl text-sm font-semibold transition-all">
+                    Add to Cart
+                </button>
+            </div>
+        `;
+        card.onclick = () => showProductModal(product);
+        container.appendChild(card);
+    });
+}
+
+// Show modal
+function showProductModal(product) {
+    selectedProductForModal = product;
+    const modal = document.getElementById('product-modal');
+    document.getElementById('modal-content').innerHTML = `
+        <div class="flex gap-6">
+            <div class="flex-shrink-0 w-48 h-48 bg-gray-100 rounded-2xl overflow-hidden">
+                <img src="${product.img}" class="w-full h-full object-cover">
+            </div>
+            <div class="flex-1 pt-2">
+                <div class="uppercase text-xs tracking-widest text-amber-500 font-medium">${product.category}</div>
+                <h3 class="text-2xl font-semibold mt-1">${product.name}</h3>
+                <div class="mt-6 flex items-baseline gap-1">
+                    <span class="text-4xl font-bold">$${product.price}</span>
+                </div>
+                <div class="mt-8 text-sm text-gray-600">
+                    <p class="font-medium mb-3">About this item</p>
+                    <ul class="space-y-2 text-xs">
+                        <li>✓ Premium sound quality</li>
+                        <li>✓ 30-hour battery life</li>
+                        <li>✓ Active Noise Cancellation</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    `;
+    modal.classList.remove('hidden');
+}
+
+// Cart functions
+function addToCart(id) {
+    const product = products.find(p => p.id === id);
+    if (product) {
+        cart.push(product);
+        updateCartCount();
+        showToast(`${product.name} added to cart!`);
+    }
+}
+
+function updateCartCount() {
+    document.getElementById('cart-count').textContent = cart.length;
+    document.getElementById('cart-text').textContent = `${cart.length} items`;
+}
+
+function showToast(message) {
+<|eos|>

@@ -15,6 +15,7 @@ import {
 import {
     uploadFiles,
     analyzeImage,
+    getHistory,
     streamAI,
     createNewChat,
     sendVoiceMessage,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/api";
 
 type ChatMessage = {
+    id?: string;
     role: "user" | "assistant";
     content: string;
     regenerate?: boolean;
@@ -59,6 +61,9 @@ export default function ChatInput({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakingChatIdRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const submissionInFlightRef = useRef(false);
+  const activeRequestIdRef = useRef<string | null>(null);
+  const activeAssistantMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const handleQuickPrompt = (e: Event) => {
@@ -348,16 +353,13 @@ export default function ChatInput({
   const processVoiceAudio = async (audioBlob: Blob) => {
     setIsProcessingVoice(true);
     setIsRecording(false);
-
     try {
       let targetChatId = chatId;
       if (targetChatId === null) {
         try {
           const newChat = await createNewChat();
           targetChatId = newChat.chat_id;
-          if (onChatCreated) {
-            onChatCreated(newChat.chat_id);
-          }
+          onChatCreated?.(newChat.chat_id);
         } catch (err) {
           console.warn("Could not create chat session on server", err);
           throw new Error("Unable to create a chat. Please try again.");
@@ -399,10 +401,19 @@ export default function ChatInput({
   // SEND MESSAGE
   // --------------------------------
 
-const sendMessage = async () => {
-    if (loading || isRecording || isProcessingVoice || isSpeaking) {
+  const sendMessage = async () => {
+    if (
+      submissionInFlightRef.current ||
+      loading ||
+      isRecording ||
+      isProcessingVoice ||
+      isSpeaking
+    ) {
       return;
     }
+    submissionInFlightRef.current = true;
+    const requestId = crypto.randomUUID();
+    activeRequestIdRef.current = requestId;
 
     // Stop any ongoing voice activity
     stopAudioPlayback();
@@ -416,13 +427,29 @@ const sendMessage = async () => {
       !userText &&
       selectedFiles.length === 0
     ) {
+      submissionInFlightRef.current = false;
+      activeRequestIdRef.current = null;
       return;
     }
+    const submittedText = userText;
 
     // Copy files before clearing UI
     const filesToProcess = [
       ...selectedFiles
     ];
+    const userDisplayText =
+      submittedText ||
+      filesToProcess.map((file) => `📄 ${file.name}`).join("\n");
+    const userMessageId = crypto.randomUUID();
+    console.info("SEND_START", {
+      requestId,
+      submittedTextLength: submittedText.length,
+      chatIdBefore: chatId,
+    });
+    setMessages((previous) => [
+      ...previous,
+      { id: userMessageId, role: "user", content: userDisplayText },
+    ]);
 
     const documentFiles =
       filesToProcess.filter(
@@ -464,6 +491,8 @@ const sendMessage = async () => {
     setInput("");
     setSelectedFiles([]);
 
+    let createdChatId: number | null = null;
+
     try {
       setLoading(true);
 
@@ -473,42 +502,27 @@ const sendMessage = async () => {
         try {
           const newChat = await createNewChat();
           targetChatId = newChat.chat_id;
-          if (onChatCreated) {
-            onChatCreated(newChat.chat_id);
-          }
+          createdChatId = newChat.chat_id;
         } catch (err) {
           console.warn("Could not create chat session on server", err);
           throw new Error("Unable to create a chat. Please try again.");
         }
       }
+      console.info("CHAT_RESOLVED", { requestId, resolvedChatId: targetChatId });
 
       // Abort any stale controller and create a new one for this request
       abortControllerRef.current?.abort();
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
+      const isActiveRequest = () =>
+        activeRequestIdRef.current === requestId &&
+        !abortController.signal.aborted;
 
       // =================================
       // DOCUMENTS (PDFs, TEXT, CODE)
       // =================================
 
       if (documentFiles.length > 0) {
-        setMessages((previous) => [
-          ...previous,
-          {
-            role: "user",
-            content:
-              documentFiles
-                .map(
-                  (file) =>
-                    `📄 ${file.name}`
-                )
-                .join("\n") +
-              (userText
-                ? `\n\n${userText}`
-                : ""),
-          },
-        ]);
-
         console.log(
           `Uploading ${documentFiles.length} document(s)...`
         );
@@ -540,9 +554,9 @@ const sendMessage = async () => {
 
         // User uploaded PDFs and asked
         // a question at the same time
-        if (userText) {
+        if (submittedText) {
           const stream = await streamAI(
-            userText,
+            submittedText,
             targetChatId,
             abortController.signal
           );
@@ -556,14 +570,8 @@ const reader = stream.getReader();
 const decoder = new TextDecoder();
 
 let answer = "";
-
-setMessages((previous) => [
-    ...previous,
-    {
-        role: "assistant",
-        content: "",
-    },
-]);
+let assistantMessageId: string | null = null;
+let firstChunkLogged = false;
 
 while (true) {
 
@@ -578,32 +586,50 @@ while (true) {
 
     if (done) break;
 
-    answer += decoder.decode(value);
+    if (!isActiveRequest()) break;
+    answer += decoder.decode(value, { stream: true });
+    if (!answer) continue;
 
     setMessages((previous) => {
-
-        const updated = [...previous];
-
-        updated[updated.length - 1] = {
-            role: "assistant",
-            content: answer + "▌",
-        };
-
-        return updated;
+        if (!assistantMessageId) {
+            assistantMessageId = crypto.randomUUID();
+            activeAssistantMessageIdRef.current = assistantMessageId;
+            return [
+              ...previous,
+              { id: assistantMessageId, role: "assistant", content: answer, isStreaming: true },
+            ];
+        }
+        return previous.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, content: answer, isStreaming: true }
+            : message
+        );
     });
+    if (!firstChunkLogged) {
+      firstChunkLogged = true;
+      console.info("FIRST_CHUNK", { requestId, chunkLength: value?.length ?? 0 });
+    }
 
 }
-setMessages((previous) => {
+const trailingText = decoder.decode();
+if (trailingText) {
+    answer += trailingText;
+}
+if (isActiveRequest()) setMessages((previous) => {
+    const finalAnswer = answer.trim()
+        ? answer
+        : "⚠️ No answer was received. Please try again.";
 
-    const updated = [...previous];
-
-    updated[updated.length - 1] = {
-        role: "assistant",
-        content: answer,
-    };
-
-    return updated;
+    if (!assistantMessageId) {
+        return [...previous, { id: crypto.randomUUID(), role: "assistant", content: finalAnswer, isStreaming: false }];
+    }
+    return previous.map((message) =>
+      message.id === assistantMessageId
+        ? { ...message, content: finalAnswer, isStreaming: false }
+        : message
+    );
 });
+console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
         } else {
           let message =
             `📚 ${successfulCount} of ${totalCount} document file(s) processed successfully.`;
@@ -623,6 +649,7 @@ setMessages((previous) => {
             (previous) => [
               ...previous,
               {
+                id: crypto.randomUUID(),
                 role: "assistant",
                 content: message,
               },
@@ -644,18 +671,6 @@ setMessages((previous) => {
           const imageFile
           of imageFiles
         ) {
-          setMessages(
-            (previous) => [
-              ...previous,
-              {
-                role: "user",
-                content:
-                  `🖼️ ${imageFile.name}` +
-                  `\n\n${question}`,
-              },
-            ]
-          );
-
           console.log(
             "Analyzing image:",
             imageFile.name
@@ -671,6 +686,7 @@ console.log(result);
 setMessages((previous) => [
     ...previous,
     {
+        id: crypto.randomUUID(),
         role: "assistant",
         content:
             `🖼️ ${imageFile.name}\n\n${result.answer}`,
@@ -687,18 +703,8 @@ setMessages((previous) => [
         filesToProcess.length === 0 &&
         userText
       ) {
-        setMessages(
-          (previous) => [
-            ...previous,
-            {
-              role: "user",
-              content: userText,
-            },
-          ]
-        );
-
         const stream = await streamAI(
-          userText,
+          submittedText,
           targetChatId,
           abortController.signal
         );
@@ -711,17 +717,8 @@ const reader = stream.getReader();
 const decoder = new TextDecoder();
 
 let answer = "";
-
-// Empty assistant message
-setMessages((previous) => [
-    ...previous,
-    
-{
-    role: "assistant",
-    content: answer,
-    regenerate: true,
-},
-]);
+let assistantMessageId: string | null = null;
+let firstChunkLogged = false;
 
 while (true) {
 
@@ -734,34 +731,74 @@ while (true) {
 
     if (done) break;
 
+    if (!isActiveRequest()) break;
     answer += decoder.decode(value, { stream: true });
+    if (!answer) continue;
 
     setMessages((previous) => {
-
-        const updated = [...previous];
-
-        updated[updated.length - 1] = {
-            role: "assistant",
-            content: answer + "▌",
-        };
-
-        return updated;
+        if (!assistantMessageId) {
+          assistantMessageId = crypto.randomUUID();
+          activeAssistantMessageIdRef.current = assistantMessageId;
+          return [
+            ...previous,
+            { id: assistantMessageId, role: "assistant", content: answer, isStreaming: true, regenerate: true },
+          ];
+        }
+        return previous.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, content: answer, isStreaming: true }
+            : message
+        );
     });
+    if (!firstChunkLogged) {
+      firstChunkLogged = true;
+      console.info("FIRST_CHUNK", { requestId, chunkLength: value?.length ?? 0 });
+    }
+}
+const trailingText = decoder.decode();
+if (trailingText) {
+    answer += trailingText;
 }
 
 // Remove cursor after completion
-setMessages((previous) => {
+if (isActiveRequest()) setMessages((previous) => {
+    const finalAnswer = answer.trim()
+      ? answer
+      : "⚠️ No answer was received. Please try again.";
 
-    const updated = [...previous];
-
-    updated[updated.length - 1] = {
-        role: "assistant",
-        content: answer,
-    };
-
-    return updated;
+    if (!assistantMessageId) {
+      return [...previous, { id: crypto.randomUUID(), role: "assistant", content: finalAnswer, isStreaming: false }];
+    }
+    return previous.map((message) =>
+      message.id === assistantMessageId
+        ? { ...message, content: finalAnswer, isStreaming: false }
+        : message
+    );
 });
+console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
       }
+
+      // Reconcile the committed exchange after streaming. This closes the
+      // race where the initial history request finishes between the user
+      // update and the assistant update.
+      if (targetChatId !== null && isActiveRequest()) {
+        try {
+          const history = await getHistory(targetChatId);
+          if (isActiveRequest()) {
+            setMessages(
+              (history || []).map(
+                (message: { role: "user" | "assistant"; content: string }, index: number) => ({
+                  ...message,
+                  id: `history-${targetChatId}-${index}`,
+                })
+              )
+            );
+          }
+        } catch (historyError) {
+          console.warn("Unable to reconcile streamed chat history:", historyError);
+        }
+      }
+
     } catch (error: unknown) {
       // Handle AbortError as expected user cancellation, not an error
       if (error instanceof Error && error.name === "AbortError") {
@@ -777,19 +814,41 @@ setMessages((previous) => {
             ? `❌ Error: ${error.message}`
             : "❌ Unable to process the request. Please try again.";
 
-        setMessages(
-          (previous) => [
-            ...previous,
-            {
-              role: "assistant",
-              content: errorMessage,
-            },
-          ]
-        );
+        if (activeRequestIdRef.current === requestId) {
+          setMessages(
+            (previous) => {
+              const updated = activeAssistantMessageIdRef.current
+                ? previous.map((message) =>
+                    message.id === activeAssistantMessageIdRef.current
+                      ? { ...message, isStreaming: false }
+                      : message
+                  )
+                : previous;
+              return [
+                ...updated,
+                {
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  content: errorMessage,
+                  isStreaming: false,
+                },
+              ];
+            }
+          );
+        }
       }
     } finally {
+      submissionInFlightRef.current = false;
       abortControllerRef.current = null;
-      setLoading(false);
+      if (activeRequestIdRef.current === requestId) {
+        // Keep the completed request identity until the next send. React may
+        // execute queued functional state updaters after this async function
+        // returns; clearing it here would discard the final assistant update.
+        setLoading(false);
+      }
+      if (activeRequestIdRef.current === requestId) {
+        activeAssistantMessageIdRef.current = null;
+      }
     }
   };
 
@@ -1013,11 +1072,25 @@ setMessages((previous) => {
 
         <button
     type="button"
-    onClick={
-        loading
-            ? () => abortControllerRef.current?.abort()
-            : sendMessage
-    }
+    onClick={() => {
+      if (loading) {
+        activeRequestIdRef.current = null;
+        const assistantMessageId = activeAssistantMessageIdRef.current;
+        if (assistantMessageId) {
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? { ...message, isStreaming: false }
+                : message
+            )
+          );
+        }
+        abortControllerRef.current?.abort();
+        setLoading(false);
+      } else {
+        void sendMessage();
+      }
+    }}
     disabled={
         !loading &&
         (isRecording || isProcessingVoice || isSpeaking) &&
@@ -1040,5 +1113,3 @@ setMessages((previous) => {
   );
 
 }
-
-
