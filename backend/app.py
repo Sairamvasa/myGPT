@@ -219,7 +219,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting MyGPT API")
     configure_default_limits()
     logger.info("Rate limits configured")
-    
+
     # Verify critical dependencies
     try:
         from llm import _check_config
@@ -227,9 +227,9 @@ async def lifespan(app: FastAPI):
         logger.info("Ollama configuration verified")
     except Exception as e:
         logger.warning("Ollama configuration check failed: %s", e)
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down MyGPT API")
 
@@ -240,7 +240,7 @@ app = FastAPI(lifespan=lifespan)
 
 def log_security_event(event_type: str, details: dict):
     """Log security-relevant events with structured data."""
-    safe_details = {k: v for k, v in details.items() 
+    safe_details = {k: v for k, v in details.items()
                     if k not in ("password", "password_hash", "token", "secret", "key", "api_key")}
     logger.warning("SECURITY_EVENT: type=%s details=%s", event_type, safe_details)
 
@@ -249,7 +249,7 @@ def log_request(request: Request, response_status: int, latency_ms: float):
     """Log request with structured data (no sensitive content)."""
     user_id = getattr(request.state, "user_id", None)
     rate_limit_info = getattr(request.state, "rate_limit_info", None)
-    
+
     logger.info(
         "REQUEST: method=%s path=%s status=%d latency_ms=%.2f user_id=%s rate_limit=%s client_ip=%s",
         request.method,
@@ -268,7 +268,7 @@ async def logging_middleware(request: Request, call_next):
     import time
     start_time = time.monotonic()
     request.state.trace_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
-    
+
     try:
         response = await call_next(request)
         latency_ms = (time.monotonic() - start_time) * 1000
@@ -277,7 +277,7 @@ async def logging_middleware(request: Request, call_next):
     except Exception as e:
         latency_ms = (time.monotonic() - start_time) * 1000
         log_request(request, 500, latency_ms)
-        logger.exception("UNHANDLED_ERROR: method=%s path=%s error=%s", 
+        logger.exception("UNHANDLED_ERROR: method=%s path=%s error=%s",
                         request.method, request.url.path, type(e).__name__)
         raise
 
@@ -318,7 +318,7 @@ def ready():
     """Readiness probe - checks critical dependencies."""
     import sqlite3
     from llm import _check_config
-    
+
     # Check database
     try:
         conn = get_connection()
@@ -328,7 +328,7 @@ def ready():
     except Exception as e:
         logger.error("Database health check failed: %s", e)
         db_ok = False
-    
+
     # Check provider configuration (doesn't require a network connection).
     try:
         from llm import get_routed_provider_metadata
@@ -337,7 +337,7 @@ def ready():
     except Exception as e:
         logger.error("Provider config check failed: %s", type(e).__name__)
         provider_ok = False
-    
+
     if db_ok and provider_ok:
         return {"status": "ready", "database": "ok", "provider": "ok"}
     else:
@@ -351,7 +351,7 @@ def ready():
                 "provider": "ok" if provider_ok else "failed",
             },
         )
-    
+
 
 # Rate limit dependencies
 register_rate_limit = Depends(ip_rate_limit("register"))
@@ -506,7 +506,7 @@ def new_chat(user_id: int = Depends(get_current_user)):
         "title": "New Chat",
         "user_id": user_id
     }
-    
+
 @app.post("/chat")
 def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = chat_rate_limit):
 
@@ -527,7 +527,7 @@ def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current
     save_message(data.chat_id, "user", data.message)
     _log_chat_phase(trace_id, "user_persisted_before_agent", user_message_persisted=True)
 
-    perf = create_context("chat", OLLAMA_MODEL)
+    perf = create_context("chat", provider_name or "unknown", provider_model or OLLAMA_MODEL)
     perf.rag_used = False
 
     result = agent.run(
@@ -586,7 +586,7 @@ def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current
             "Please try again."
         )
     perf.output_length = len(answer)
-    
+
     # Verify RAG answers against retrieved context
     if action == "rag" and result.get("context"):
         is_safe = is_answer_safe_for_context(answer, result["context"], data.message)
@@ -596,7 +596,7 @@ def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current
 
     if action in ("current_info", "web_research"):
         answer = _enforce_current_info_grounding(answer, result.get("tool_results"))
-    
+
     perf.emit()
 
     save_message(
@@ -891,11 +891,11 @@ def generate_image(
 ):
     """
     Generate an image using Gemini's image generation model.
-    
+
     Args:
         prompt: Text description of the image to generate
         aspect_ratio: Aspect ratio for the generated image (1:1, 16:9, 9:16, 4:3, 3:4)
-    
+
     Returns:
         base64 encoded image data
     """
@@ -944,7 +944,7 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
     save_message(data.chat_id, "user", data.message)
     _log_chat_phase(trace_id, "user_persisted_before_agent", user_message_persisted=True)
 
-    perf = create_context("stream", OLLAMA_MODEL)
+    perf = create_context("stream", provider_name or "unknown", provider_model or OLLAMA_MODEL)
 
     result = agent.run(
         data.message,
@@ -1015,6 +1015,7 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
                 chunk_count += 1
                 full_answer += chunk
                 if chunk_count == 1:
+                    perf.mark_first_token()
                     _log_chat_phase(
                         trace_id,
                         "first_backend_chunk",
@@ -1111,7 +1112,7 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
         generate(),
         media_type="text/plain"
     )
-    
+
 @app.get("/memories")
 def memories(user_id: int = Depends(get_current_user)):
 

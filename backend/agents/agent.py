@@ -111,14 +111,16 @@ class Agent:
         direct_answer = None
 
         # 2. Extract and Persist Long-Term User Facts & Preferences
-        # Only run when message contains first-person personal markers to
-        # avoid polluting memory with every routine question.
-        if _PERSONAL_MARKERS.search(message) and user_id is not None:
-            facts = extract_memories(message)
-            for fact in facts:
-                save_memory(fact, user_id)
-            if facts:
-                print(f"[Memory] Saved {len(facts)} user fact(s): {facts}")
+        # Skip extraction for math/general knowledge/chat to reduce TTFT
+        if action not in (ACTION_MATH, ACTION_GENERAL_KNOWLEDGE) and _PERSONAL_MARKERS.search(message) and user_id is not None:
+            # We only extract if the action explicitly demands memory or if we're unsure.
+            # A true fast path chat like 'hello' won't hit this.
+            if action in (ACTION_MEMORY,):
+                facts = extract_memories(message)
+                for fact in facts:
+                    save_memory(fact, user_id)
+                if facts:
+                    print(f"[Memory] Saved {len(facts)} user fact(s): {facts}")
 
         # Keep very simple greetings as a plain user message to avoid
         # unnecessary prompt overhead.
@@ -157,11 +159,11 @@ class Agent:
         # explicitly by build_prompt().
         if history and history[-1] == ("user", message):
             history = history[:-1]
-        memories = (
-            search_memories(message, user_id, action=action)
-            if user_id is not None
-            else []
-        )
+
+        memories = []
+        if user_id is not None and action in (ACTION_MEMORY, ACTION_WEB_RESEARCH):
+            memories = search_memories(message, user_id, action=action)
+
         context = None
         rag_unavailable = False
 

@@ -79,10 +79,10 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 #   RAG deep/long analysis     -> 768
 #   long analysis              -> 768
 
-NUM_PREDICT_SHORT = 64
-NUM_PREDICT_NORMAL = 512
-NUM_PREDICT_RAG = 512
-NUM_PREDICT_LONG = 768
+NUM_PREDICT_SHORT = 256
+NUM_PREDICT_NORMAL = 2048
+NUM_PREDICT_RAG = 2048
+NUM_PREDICT_LONG = 4096
 
 # Patterns that indicate a very short factual or math question.
 _SHORT_PATTERNS = (
@@ -397,12 +397,12 @@ def _get_model_for_action(action: str) -> tuple[str, str]:
         if GEMINI_API_KEY:
             return "gemini", GEMINI_TEXT_MODEL
         return "ollama", OLLAMA_CODE_MODEL
-    
+
     # For code explanation, complex analysis - use stronger model if available
     if action in ("code_explanation", "web", "web_research", "current_info"):
         if GEMINI_API_KEY:
             return "gemini", GEMINI_TEXT_MODEL
-    
+
     # Default to Ollama
     return "ollama", OLLAMA_MODEL
 
@@ -411,7 +411,7 @@ def ask_gemini(prompt: str, perf_context=None, action: Optional[str] = None) -> 
     """Generate text using Gemini model with bounded retries."""
     if not GEMINI_API_KEY:
         raise LLMError("auth_error", "Gemini API key is not configured.", 401)
-    
+
     last_error = None
     for attempt in range(GEMINI_MAX_RETRIES + 1):
         try:
@@ -450,15 +450,15 @@ def ask_gemini(prompt: str, perf_context=None, action: Optional[str] = None) -> 
         except Exception as exc:
             last_error = exc
             logger.warning("Gemini request attempt %d/%d failed: %s", attempt + 1, GEMINI_MAX_RETRIES + 1, exc)
-            
+
             # Check if this is a retryable error (503, 429, timeout, network)
             error_text = str(exc).lower()
             is_retryable = any(k in error_text for k in (
-                "503", "429", "quota", "resource_exhausted", "unavailable", 
+                "503", "429", "quota", "resource_exhausted", "unavailable",
                 "timeout", "timed out", "deadline exceeded",
                 "connection", "connect", "network", "resolve", "socket"
             ))
-            
+
             if attempt < GEMINI_MAX_RETRIES and is_retryable:
                 # Exponential backoff with jitter
                 delay = min(GEMINI_BASE_DELAY * (2 ** attempt), GEMINI_MAX_DELAY)
@@ -467,13 +467,13 @@ def ask_gemini(prompt: str, perf_context=None, action: Optional[str] = None) -> 
                 logger.info("Retrying Gemini in %.2f seconds...", delay)
                 time.sleep(delay)
                 continue
-            
+
             if perf_context is not None:
                 perf_context.add_error("unknown_error")
                 perf_context.emit()
             logger.error("Gemini request failed after %d attempts: %s", attempt + 1, exc)
             raise LLMError("connection_error", f"Gemini request failed: {exc}", 503)
-    
+
     # Should not reach here, but just in case
     raise LLMError("connection_error", f"Gemini request failed after retries: {last_error}", 503)
 
@@ -659,7 +659,7 @@ def stream_gemini(prompt: str, perf_context=None, action: Optional[str] = None):
     """Stream text using Gemini model with bounded retries."""
     if not GEMINI_API_KEY:
         raise LLMError("auth_error", "Gemini API key is not configured.", 401)
-    
+
     last_error = None
     for attempt in range(GEMINI_MAX_RETRIES + 1):
         try:
@@ -711,14 +711,14 @@ def stream_gemini(prompt: str, perf_context=None, action: Optional[str] = None):
         except Exception as exc:
             last_error = exc
             logger.warning("Gemini stream attempt %d/%d failed: %s", attempt + 1, GEMINI_MAX_RETRIES + 1, exc)
-            
+
             error_text = str(exc).lower()
             is_retryable = any(k in error_text for k in (
-                "503", "429", "quota", "resource_exhausted", "unavailable", 
+                "503", "429", "quota", "resource_exhausted", "unavailable",
                 "timeout", "timed out", "deadline exceeded",
                 "connection", "connect", "network", "resolve", "socket"
             ))
-            
+
             if attempt < GEMINI_MAX_RETRIES and is_retryable:
                 delay = min(GEMINI_BASE_DELAY * (2 ** attempt), GEMINI_MAX_DELAY)
                 import random
@@ -726,13 +726,13 @@ def stream_gemini(prompt: str, perf_context=None, action: Optional[str] = None):
                 logger.info("Retrying Gemini stream in %.2f seconds...", delay)
                 time.sleep(delay)
                 continue
-            
+
             if perf_context is not None:
                 perf_context.add_error("unknown_error")
                 perf_context.emit()
             logger.error("Gemini stream request failed after %d attempts: %s", attempt + 1, exc)
             raise LLMError("connection_error", f"Gemini stream failed: {exc}", 503)
-    
+
     raise LLMError("connection_error", f"Gemini stream failed after retries: {last_error}", 503)
 
 

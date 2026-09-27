@@ -42,22 +42,23 @@ class PerfContext:
         "errors",
     ]
 
-    def __init__(self, request_id: str, action: str, model: str):
+    def __init__(self, request_id: str, action: str, provider: str, model: str):
         self.request_id = request_id
         self.action = action
+        self.provider = provider
         self.model = model
         self.rag_used = False
         self.routing_ms = 0.0
         self.output_length = 0
         self.retrieval_ms = 0.0
         self.prompt_build_ms = 0.0
-        self.ollama_ttft_ms = 0.0
-        self.ollama_total_ms = 0.0
+        self.ttft_ms = 0.0
+        self.generation_ms = 0.0
         self.prompt_eval_count = 0
         self.prompt_eval_duration_ms = 0.0
         self.eval_count = 0
         self.eval_duration_ms = 0.0
-        self.backend_total_ms = 0.0
+        self.total_ms = 0.0
         self.start_time = time.perf_counter()
         self.ollama_start_time = 0.0
         self.first_token_time = 0.0
@@ -72,13 +73,13 @@ class PerfContext:
 
     def mark_done(self, ollama_metrics: Optional[Dict[str, Any]] = None):
         if ollama_metrics:
-            self.ollama_ttft_ms = ollama_metrics.get("ttft_ms", 0.0)
-            self.ollama_total_ms = ollama_metrics.get("total_ms", 0.0)
+            self.ttft_ms = ollama_metrics.get("ttft_ms", 0.0)
+            self.generation_ms = ollama_metrics.get("total_ms", 0.0)
             self.prompt_eval_count = ollama_metrics.get("prompt_eval_count", 0)
             self.prompt_eval_duration_ms = ollama_metrics.get("prompt_eval_duration_ms", 0.0)
             self.eval_count = ollama_metrics.get("eval_count", 0)
             self.eval_duration_ms = ollama_metrics.get("eval_duration_ms", 0.0)
-        self.backend_total_ms = (time.perf_counter() - self.start_time) * 1000
+        self.total_ms = (time.perf_counter() - self.start_time) * 1000
 
     def add_error(self, msg: str):
         self.errors.append(msg)
@@ -90,18 +91,19 @@ class PerfContext:
         entry = {
             "request_id": self.request_id,
             "action": self.action,
+            "provider": self.provider,
             "model": self.model,
             "rag_used": self.rag_used,
             "routing_ms": round(self.routing_ms, 1),
             "retrieval_ms": round(self.retrieval_ms, 1),
             "prompt_build_ms": round(self.prompt_build_ms, 1),
-            "ollama_ttft_ms": round(self.ollama_ttft_ms, 1),
-            "ollama_total_ms": round(self.ollama_total_ms, 1),
+            "TTFT": round(self.ttft_ms, 1),
+            "generation_ms": round(self.generation_ms, 1),
             "prompt_eval_count": self.prompt_eval_count,
             "prompt_eval_duration_ms": round(self.prompt_eval_duration_ms, 1),
             "eval_count": self.eval_count,
             "eval_duration_ms": round(self.eval_duration_ms, 1),
-            "backend_total_ms": round(self.backend_total_ms, 1),
+            "total_ms": round(self.total_ms, 1),
             "output_length": self.output_length,
         }
         if self.errors:
@@ -126,6 +128,6 @@ def new_request_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def create_context(action: str, model: str) -> PerfContext:
+def create_context(action: str, provider: str, model: str) -> PerfContext:
     """Create a new PerfContext for a request."""
-    return PerfContext(new_request_id(), action, model)
+    return PerfContext(new_request_id(), action, provider, model)

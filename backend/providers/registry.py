@@ -137,9 +137,13 @@ class ProviderRegistry:
             except ProviderError as exc:
                 last_error = exc
                 logger.warning("Provider '%s' stream failed: %s", provider.provider_name, exc.kind)
+                if emitted:
+                    raise
             except Exception as exc:
                 last_error = exc
                 logger.warning("Provider '%s' stream failed with unexpected %s", provider.provider_name, type(exc).__name__)
+                if emitted:
+                    raise
 
         if last_error and primary_only:
             raise last_error
@@ -217,9 +221,13 @@ class ProviderRegistry:
             except ProviderError as exc:
                 last_error = exc
                 logger.warning("Provider '%s' stream failed: %s (Details: %s)", provider.provider_name, exc.kind, exc.user_message)
+                if emitted:
+                    raise
             except Exception as exc:
                 last_error = exc
                 logger.warning("Provider '%s' stream failed with unexpected error %s: %s", provider.provider_name, type(exc).__name__, str(exc))
+                if emitted:
+                    raise
 
         if last_error and primary_only:
             raise last_error

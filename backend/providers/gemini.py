@@ -72,7 +72,12 @@ class GeminiProvider(LLMProvider):
             try:
                 client = self._get_client()
                 self._log_safe(logging.INFO, "Gemini generate request", model=self.config.model)
-                from google.genai import types
+                try:
+                    from agents.prompts import SYSTEM_PROMPT
+                    system_instruction = SYSTEM_PROMPT
+                except ImportError:
+                    system_instruction = "You are a helpful AI assistant."
+
                 response = client.models.generate_content(
                     model=self.config.model,
                     contents=prompt,
@@ -80,6 +85,7 @@ class GeminiProvider(LLMProvider):
                         temperature=temperature,
                         top_p=top_p,
                         max_output_tokens=num_predict or 8192,
+                        system_instruction=system_instruction,
                     ),
                 )
                 text = getattr(response, "text", None)
@@ -130,6 +136,12 @@ class GeminiProvider(LLMProvider):
                 client = self._get_client()
                 self._log_safe(logging.INFO, "Gemini stream request", model=self.config.model)
                 from google.genai import types
+                try:
+                    from agents.prompts import SYSTEM_PROMPT
+                    system_instruction = SYSTEM_PROMPT
+                except ImportError:
+                    system_instruction = "You are a helpful AI assistant."
+
                 response = client.models.generate_content_stream(
                     model=self.config.model,
                     contents=prompt,
@@ -137,6 +149,7 @@ class GeminiProvider(LLMProvider):
                         temperature=temperature,
                         top_p=top_p,
                         max_output_tokens=num_predict or 8192,
+                        system_instruction=system_instruction,
                     ),
                 )
                 for chunk in response:
