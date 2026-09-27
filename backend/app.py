@@ -287,6 +287,7 @@ DEFAULT_CORS_ORIGINS = {
     "http://127.0.0.1:3000",
     "http://192.168.1.34:3000",
     "https://my-gpt-hazel-six.vercel.app",
+    "https://my-gpt-1q12-e38n35b1z-sairamvasas-projects.vercel.app",
     "https://my-pam24ufo6-sairamvasas-projects.vercel.app",
 }
 CORS_ORIGINS = {
@@ -298,6 +299,7 @@ CORS_ORIGINS = {
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(CORS_ORIGINS),
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1120,64 +1122,6 @@ def memories(user_id: int = Depends(get_current_user)):
 
     return {
         "memories": get_all_memories(user_id)
-    }
-
-
-@app.post("/login")
-def login(data: LoginRequest, _rl: None = login_rate_limit):
-
-    email = data.email.strip().lower()
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT id, name, email, password_hash FROM users WHERE email = ?",
-        (email,)
-    )
-
-    user = cursor.fetchone()
-    conn.close()
-
-    if not user:
-        return {
-            "success": False,
-            "message": "Invalid email or password"
-        }
-
-    user_id, name, email, password_hash = user
-
-    password_valid = bcrypt.checkpw(
-        data.password.encode("utf-8"),
-        password_hash.encode("utf-8")
-    )
-
-    if not password_valid:
-        return {
-            "success": False,
-            "message": "Invalid email or password"
-        }
-
-    token_data = {
-        "user_id": user_id,
-        "email": email,
-        "exp": datetime.utcnow() + timedelta(days=7)
-    }
-
-    access_token = jwt.encode(
-        token_data,
-        JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM
-    )
-
-    return {
-        "success": True,
-        "message": "Login successful",
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user_id": user_id,
-        "name": name,
-        "email": email
     }
 
 
