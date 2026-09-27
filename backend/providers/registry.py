@@ -216,10 +216,10 @@ class ProviderRegistry:
                 return
             except ProviderError as exc:
                 last_error = exc
-                logger.warning("Provider '%s' async stream failed: %s", provider.provider_name, exc.kind)
+                logger.warning("Provider '%s' stream failed: %s (Details: %s)", provider.provider_name, exc.kind, exc.user_message)
             except Exception as exc:
                 last_error = exc
-                logger.warning("Provider '%s' async stream failed with unexpected %s", provider.provider_name, type(exc).__name__)
+                logger.warning("Provider '%s' stream failed with unexpected error %s: %s", provider.provider_name, type(exc).__name__, str(exc))
 
         if last_error and primary_only:
             raise last_error
@@ -260,8 +260,16 @@ def configure_providers_from_env() -> ProviderRegistry:
     registry._fallback_chain.clear()
 
     # Determine which provider should be primary
-    ai_provider = os.getenv("AI_PROVIDER", "ollama").lower()
+    ai_provider = (
+        os.getenv("PROVIDER_PRIMARY")
+        or os.getenv("LLM_PROVIDER")
+        or os.getenv("AI_PROVIDER")
+        or "ollama"
+    ).lower()
     model_router_provider = os.getenv("MODEL_ROUTER_PROVIDER", "").lower()
+    app_env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    is_render = bool(os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER"))
+    is_production = app_env == "production" or is_render
 
     # OmniRoute configuration
     omniroute_base_url = os.getenv("OMNIROUTE_BASE_URL")
@@ -292,6 +300,20 @@ def configure_providers_from_env() -> ProviderRegistry:
     # If MODEL_ROUTER_PROVIDER is set, use it; otherwise use AI_PROVIDER
     effective_primary = model_router_provider or ai_provider
 
+    # If production was configured with Ollama but a cloud provider is
+    # available, prefer the cloud provider. Otherwise fail clearly instead
+    # of sending requests to an unreachable local endpoint.
+    if is_production and effective_primary == "ollama":
+        if omniroute_api_key and omniroute_base_url:
+            effective_primary = "omniroute"
+        elif gemini_api_key:
+            effective_primary = "gemini"
+        else:
+            raise RuntimeError(
+                "A cloud provider must be configured in production. "
+                "Set AI_PROVIDER=gemini or AI_PROVIDER=omniroute and provide its credentials."
+            )
+
     # Register OmniRoute if configured
     if omniroute_base_url and omniroute_api_key:
         omni_config = ProviderConfig(
@@ -306,30 +328,40 @@ def configure_providers_from_env() -> ProviderRegistry:
                          is_fallback=(effective_primary != "omniroute"))
         logger.info("OmniRoute provider registered (primary=%s)", effective_primary == "omniroute")
 
-    # Register Ollama
-    ollama_config = ProviderConfig(
-        name="ollama",
-        model=ollama_model,
-        api_key=ollama_api_key if ollama_api_key else None,
-        base_url=ollama_base_url,
-        extra=ollama_extra,
+    ollama_is_local = ollama_base_url.lower().startswith(
+        ("http://localhost", "http://127.0.0.1", "http://[::1]", "http://0.0.0.0")
     )
-    registry.register("ollama", OllamaProvider(ollama_config),
-                     is_primary=(effective_primary == "ollama" and not (omniroute_base_url and omniroute_api_key and effective_primary == "omniroute")),
-                     is_fallback=True)
-    logger.info("Ollama provider registered (primary=%s)", effective_primary == "ollama")
+
+    # A Render instance must not silently select a developer's local Ollama.
+    # Local Ollama remains the default for development.
+    allow_ollama = not (is_production and ollama_is_local)
+
+    # Register Ollama
+    if allow_ollama:
+        ollama_config = ProviderConfig(
+            name="ollama",
+            model=ollama_model,
+            api_key=ollama_api_key if ollama_api_key else None,
+            base_url=ollama_base_url,
+            extra=ollama_extra,
+        )
+        registry.register("ollama", OllamaProvider(ollama_config),
+                         is_primary=(effective_primary == "ollama"),
+                         is_fallback=True)
+        logger.info("Ollama provider registered (primary=%s)", effective_primary == "ollama")
 
     # Register Ollama Code model as separate provider for code tasks
-    ollama_code_config = ProviderConfig(
-        name="ollama_code",
-        model=ollama_code_model,
-        api_key=ollama_api_key if ollama_api_key else None,
-        base_url=ollama_base_url,
-        extra=ollama_extra,
-    )
-    registry.register("ollama_code", OllamaProvider(ollama_code_config),
-                     is_primary=False,
-                     is_fallback=True)
+    if allow_ollama:
+        ollama_code_config = ProviderConfig(
+            name="ollama_code",
+            model=ollama_code_model,
+            api_key=ollama_api_key if ollama_api_key else None,
+            base_url=ollama_base_url,
+            extra=ollama_extra,
+        )
+        registry.register("ollama_code", OllamaProvider(ollama_code_config),
+                         is_primary=False,
+                         is_fallback=True)
 
     # Register Gemini if API key is available
     if gemini_api_key:
@@ -340,20 +372,29 @@ def configure_providers_from_env() -> ProviderRegistry:
             extra=gemini_extra,
         )
         registry.register("gemini", GeminiProvider(gemini_config),
-                         is_primary=(effective_primary == "gemini" and not (omniroute_base_url and omniroute_api_key and effective_primary == "omniroute")),
+                         is_primary=(effective_primary == "gemini"),
                          is_fallback=True)
         logger.info("Gemini provider registered (primary=%s)", effective_primary == "gemini")
+
+    if effective_primary in registry._providers:
+        registry._primary_provider = effective_primary
 
     # If no primary was explicitly set, default to OmniRoute if available, then Ollama
     if not registry._primary_provider:
         if "omniroute" in registry._providers:
             registry._primary_provider = "omniroute"
             logger.info("Defaulting to OmniRoute as primary provider")
-        elif "ollama" in registry._providers:
-            registry._primary_provider = "ollama"
-            logger.info("Defaulting to Ollama as primary provider")
         elif "gemini" in registry._providers:
             registry._primary_provider = "gemini"
             logger.info("Defaulting to Gemini as primary provider")
+        elif "ollama" in registry._providers and not is_production:
+            registry._primary_provider = "ollama"
+            logger.info("Defaulting to Ollama as primary provider")
+
+    if is_production and not registry._primary_provider:
+        raise RuntimeError(
+            "No cloud LLM provider is configured for production. "
+            "Configure Gemini or OmniRoute environment variables."
+        )
 
     return registry

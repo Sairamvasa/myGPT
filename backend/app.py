@@ -329,16 +329,17 @@ def ready():
         logger.error("Database health check failed: %s", e)
         db_ok = False
     
-    # Check Ollama config (doesn't require connection)
+    # Check provider configuration (doesn't require a network connection).
     try:
-        _check_config()
-        ollama_ok = True
+        from llm import get_routed_provider_metadata
+        provider_name, provider_model = get_routed_provider_metadata()
+        provider_ok = bool(provider_name and provider_model)
     except Exception as e:
-        logger.error("Ollama config check failed: %s", e)
-        ollama_ok = False
+        logger.error("Provider config check failed: %s", type(e).__name__)
+        provider_ok = False
     
-    if db_ok and ollama_ok:
-        return {"status": "ready", "database": "ok", "ollama": "ok"}
+    if db_ok and provider_ok:
+        return {"status": "ready", "database": "ok", "provider": "ok"}
     else:
         # Return 503 if not ready
         from fastapi.responses import JSONResponse
@@ -347,7 +348,7 @@ def ready():
             content={
                 "status": "not_ready",
                 "database": "ok" if db_ok else "failed",
-                "ollama": "ok" if ollama_ok else "failed",
+                "provider": "ok" if provider_ok else "failed",
             },
         )
     

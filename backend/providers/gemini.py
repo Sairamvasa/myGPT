@@ -140,7 +140,10 @@ class GeminiProvider(LLMProvider):
                     ),
                 )
                 for chunk in response:
-                    text = getattr(chunk, "text", None)
+                    try:
+                        text = getattr(chunk, "text", None)
+                    except ValueError:
+                        text = None
                     if text:
                         yield text
                 return

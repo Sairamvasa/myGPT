@@ -15,9 +15,10 @@ logger = logging.getLogger("MyGPT.Auth")
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+IS_RENDER = bool(os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER"))
 
 if not JWT_SECRET_KEY:
-    if APP_ENV == "production":
+    if APP_ENV == "production" or IS_RENDER:
         raise RuntimeError("JWT_SECRET_KEY must be configured in production.")
 
     # Development remains convenient, but no predictable secret is shipped.

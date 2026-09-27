@@ -176,6 +176,33 @@ def test_missing_omniroute_configuration(monkeypatch):
     assert registry.get("omniroute") is None
 
 
+def test_production_ollama_default_selects_configured_gemini(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.delenv("MODEL_ROUTER_PROVIDER", raising=False)
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
+    registry = configure_providers_from_env()
+
+    assert registry._primary_provider == "gemini"
+    assert registry.get("ollama") is None
+
+
+def test_production_without_cloud_provider_fails_instead_of_using_local_ollama(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="cloud provider"):
+        configure_providers_from_env()
+
+
 def test_secrets_not_in_provider_errors_or_logs(caplog):
     secret = "test-secret-key"
     provider = OmniRouteProvider(ProviderConfig(name="omniroute", model="test", api_key=secret, base_url="https://test"))
