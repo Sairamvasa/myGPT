@@ -12,6 +12,8 @@ import {
   registerUser,
   getToken,
   logoutUser,
+  getProjects,
+  type Project,
 } from "@/lib/api";
 
 type Conversation = {
@@ -27,6 +29,11 @@ export default function Home() {
   const [chatId, setChatId] = useState<number | null>(null);
   const [conversations, setConversations] =
     useState<Conversation[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] =
+    useState<Project | null>(null);
+  const [selectedProjectConversationId, setSelectedProjectConversationId] =
+    useState<number | null>(null);
 
   // ==============================
   // AUTH STATE
@@ -87,6 +94,25 @@ export default function Home() {
       void Promise.resolve().then(loadConversations);
     }
   }, [isLoggedIn, loadConversations]);
+
+  // ==============================
+  // LOAD PROJECTS
+  // ==============================
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const data = await getProjects();
+      setProjects(data);
+    } catch (error) {
+      console.error("Failed to load projects:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      void Promise.resolve().then(loadProjects);
+    }
+  }, [isLoggedIn, loadProjects]);
 
   // ==============================
   // LOGIN
@@ -155,6 +181,9 @@ export default function Home() {
     setIsLoggedIn(false);
     setChatId(null);
     setConversations([]);
+    setProjects([]);
+    setSelectedProject(null);
+    setSelectedProjectConversationId(null);
   }
 
   // ==============================
@@ -215,6 +244,48 @@ export default function Home() {
       );
 
       alert("Unable to delete chat.");
+    }
+  }
+
+  // ==============================
+  // PROJECT HANDLERS
+  // ==============================
+
+  function handleSelectProject(project: Project | null) {
+    setSelectedProject(project);
+    setSelectedProjectConversationId(null);
+  }
+
+  function handleSelectProjectConversation(
+    conversationId: number | null
+  ) {
+    setSelectedProjectConversationId(conversationId);
+  }
+
+  function handleProjectCreated(project: Project) {
+    setProjects((prev) => [project, ...prev]);
+    setSelectedProject(project);
+    setSelectedProjectConversationId(null);
+  }
+
+  function handleProjectDeleted(projectId: number) {
+    setProjects((prev) =>
+      prev.filter((p) => p.id !== projectId)
+    );
+    if (selectedProject?.id === projectId) {
+      setSelectedProject(null);
+      setSelectedProjectConversationId(null);
+    }
+  }
+
+  function handleProjectUpdated(project: Project) {
+    setProjects((prev) =>
+      prev.map((p) =>
+        p.id === project.id ? project : p
+      )
+    );
+    if (selectedProject?.id === project.id) {
+      setSelectedProject(project);
     }
   }
 
@@ -407,6 +478,14 @@ export default function Home() {
         loadConversations();
       }}
       onLogout={handleLogout}
+      projects={projects}
+      selectedProject={selectedProject}
+      onSelectProject={handleSelectProject}
+      selectedProjectConversationId={selectedProjectConversationId}
+      onSelectProjectConversation={handleSelectProjectConversation}
+      onProjectCreated={handleProjectCreated}
+      onProjectDeleted={handleProjectDeleted}
+      onProjectUpdated={handleProjectUpdated}
     />
   );
 }

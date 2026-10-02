@@ -101,7 +101,7 @@ class Agent:
     Orchestrates Memory, RAG, Web Search, Code Interpreter, and LLM reasoning.
     """
 
-    def run(self, message: str, chat_id=None, user_id=None, perf_context=None):
+    def run(self, message: str, chat_id=None, user_id=None, perf_context=None, project_id=None):
         started = time.perf_counter()
         # 1. Decide action / tools needed
         action = decide(message)
@@ -179,8 +179,19 @@ class Agent:
         if (action in (ACTION_RAG, ACTION_CODE_EXPLANATION) or contextual_followup) and user_id is not None:
             try:
                 from rag import search_pdf
-                context = search_pdf(message, user_id)
             except ImportError:
+                search_pdf = None
+
+            # Project context takes precedence — project files are scoped to project_id
+            if project_id is not None:
+                try:
+                    from rag import search_project_pdf
+                    context = search_project_pdf(message, project_id)
+                except ImportError:
+                    context = None
+            elif search_pdf is not None:
+                context = search_pdf(message, user_id)
+            else:
                 rag_unavailable = True
             # RAG excludes arbitrary chat history to prevent contamination.
             # Only clear history if we actually found relevant document context.

@@ -349,12 +349,14 @@ export async function analyzeImage(
 
   if (!response.ok) {
     let detail: unknown = {};
+    let rawText = "";
     try {
-      detail = await response.json();
+      rawText = await response.text();
+      detail = JSON.parse(rawText);
     } catch {
-      // ignore non-JSON error bodies
+      detail = rawText; // fallback to raw text if not JSON
     }
-    throw new Error(getApiErrorMessage(detail, "Image analysis failed"));
+    throw new Error(`Image analysis failed (${response.status}): ${JSON.stringify(detail)}`);
   }
 
   return await response.json();
@@ -515,4 +517,294 @@ export async function sendVoiceText(
   }
 
   return (await response.json()) as VoiceResponse;
+}
+
+// ==============================
+// PROJECTS
+// ==============================
+
+export interface Project {
+  id: number;
+  title: string;
+  description: string;
+  user_id: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ProjectConversation {
+  chat_id: number;
+  title: string;
+}
+
+export interface ProjectFileRecord {
+  id: number;
+  project_id: number;
+  user_id: number;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  created_at?: string | null;
+}
+
+export interface ProjectUploadResult {
+  file_id: number;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  chunks: number;
+}
+
+export interface ProjectConversationResult {
+  chat_id: number;
+  project_id: number;
+  title: string;
+  project_title?: string | null;
+}
+
+export async function createProject(
+  title: string,
+  description: string = ""
+): Promise<{ project_id: number; title: string; description: string; user_id: number }> {
+  const response = await authenticatedFetch(`${API_URL}/projects`, {
+    method: "POST",
+    body: JSON.stringify({ title, description }),
+  });
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to create project"));
+  }
+
+  return response.json();
+}
+
+export async function getProjects(): Promise<Project[]> {
+  const response = await authenticatedFetch(`${API_URL}/projects`);
+
+  if (!response.ok) {
+    throw new Error("Failed to load projects");
+  }
+
+  return response.json();
+}
+
+export async function getProject(projectId: number): Promise<Project> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}`);
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to load project"));
+  }
+
+  return response.json();
+}
+
+export async function updateProject(
+  projectId: number,
+  title: string,
+  description: string = ""
+): Promise<{ message: string }> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}`, {
+    method: "PUT",
+    body: JSON.stringify({ title, description }),
+  });
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to update project"));
+  }
+
+  return response.json();
+}
+
+export async function deleteProject(projectId: number): Promise<{ message: string }> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to delete project"));
+  }
+
+  return response.json();
+}
+
+export async function createProjectConversation(
+  projectId: number,
+  title: string
+): Promise<ProjectConversationResult> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}/conversations`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to create project conversation"));
+  }
+
+  return response.json();
+}
+
+export async function getProjectConversations(projectId: number): Promise<ProjectConversation[]> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}/conversations`);
+
+  if (!response.ok) {
+    throw new Error("Failed to load project conversations");
+  }
+
+  return response.json();
+}
+
+export async function uploadProjectFile(
+  projectId: number,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<ProjectUploadResult> {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_URL}/projects/${projectId}/upload`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "File upload failed"));
+  }
+
+  return response.json();
+}
+
+export async function getProjectFiles(projectId: number): Promise<ProjectFileRecord[]> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}/files`);
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to load project files"));
+  }
+
+  return response.json();
+}
+
+export async function downloadProjectFile(
+  projectId: number,
+  fileId: number
+): Promise<Blob> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_URL}/projects/${projectId}/files/${fileId}`, {
+    headers,
+  });
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to download file"));
+  }
+
+  return response.blob();
+}
+
+export async function deleteProjectFile(
+  projectId: number,
+  fileId: number
+): Promise<{ message: string }> {
+  const response = await authenticatedFetch(
+    `${API_URL}/projects/${projectId}/files/${fileId}`,
+    { method: "DELETE" }
+  );
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to delete file"));
+  }
+
+  return response.json();
+}
+
+export interface ProjectContext {
+  project: Project;
+  files: Array<{
+    id: number;
+    filename: string;
+    file_type: string;
+    file_size: number;
+    created_at?: string | null;
+  }>;
+  conversations: ProjectConversation[];
+}
+
+export async function getProjectContext(projectId: number): Promise<ProjectContext> {
+  const response = await authenticatedFetch(`${API_URL}/projects/${projectId}/context`);
+
+  if (!response.ok) {
+    let detail: unknown = {};
+    try {
+      detail = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new Error(getApiErrorMessage(detail, "Failed to load project context"));
+  }
+
+  return response.json();
 }

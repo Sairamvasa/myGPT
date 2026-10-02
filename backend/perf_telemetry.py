@@ -31,9 +31,10 @@ class PerfContext:
     """Tracks timing and metrics for a single request."""
 
     __slots__ = [
-        "request_id", "action", "model", "rag_used",
+        "request_id", "provider", "action", "model", "rag_used",
         "routing_ms", "output_length",
         "retrieval_ms", "prompt_build_ms",
+        "ttft_ms", "generation_ms", "total_ms",
         "ollama_ttft_ms", "ollama_total_ms",
         "prompt_eval_count", "prompt_eval_duration_ms",
         "eval_count", "eval_duration_ms",
@@ -42,7 +43,7 @@ class PerfContext:
         "errors",
     ]
 
-    def __init__(self, request_id: str, action: str, provider: str, model: str):
+    def __init__(self, request_id: str, action: str, provider: str = "ollama", model: str = ""):
         self.request_id = request_id
         self.action = action
         self.provider = provider
@@ -54,11 +55,14 @@ class PerfContext:
         self.prompt_build_ms = 0.0
         self.ttft_ms = 0.0
         self.generation_ms = 0.0
+        self.ollama_ttft_ms = 0.0
+        self.ollama_total_ms = 0.0
         self.prompt_eval_count = 0
         self.prompt_eval_duration_ms = 0.0
         self.eval_count = 0
         self.eval_duration_ms = 0.0
         self.total_ms = 0.0
+        self.backend_total_ms = 0.0
         self.start_time = time.perf_counter()
         self.ollama_start_time = 0.0
         self.first_token_time = 0.0
@@ -75,11 +79,14 @@ class PerfContext:
         if ollama_metrics:
             self.ttft_ms = ollama_metrics.get("ttft_ms", 0.0)
             self.generation_ms = ollama_metrics.get("total_ms", 0.0)
+            self.ollama_ttft_ms = self.ttft_ms
+            self.ollama_total_ms = self.generation_ms
             self.prompt_eval_count = ollama_metrics.get("prompt_eval_count", 0)
             self.prompt_eval_duration_ms = ollama_metrics.get("prompt_eval_duration_ms", 0.0)
             self.eval_count = ollama_metrics.get("eval_count", 0)
             self.eval_duration_ms = ollama_metrics.get("eval_duration_ms", 0.0)
         self.total_ms = (time.perf_counter() - self.start_time) * 1000
+        self.backend_total_ms = self.total_ms
 
     def add_error(self, msg: str):
         self.errors.append(msg)
@@ -128,6 +135,9 @@ def new_request_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def create_context(action: str, provider: str, model: str) -> PerfContext:
+def create_context(action: str, provider: str = "ollama", model: str = "") -> PerfContext:
     """Create a new PerfContext for a request."""
+    if not model and provider:
+        model = provider
+        provider = "ollama"
     return PerfContext(new_request_id(), action, provider, model)

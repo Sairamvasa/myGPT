@@ -1,6 +1,7 @@
 """Provider abstraction layer for LLM backends."""
 
 from providers.base import LLMProvider, ProviderError, ProviderConfig
+from providers.nvidia import NvidiaProvider
 from providers.omniroute import OmniRouteProvider
 from providers.ollama import OllamaProvider
 from providers.gemini import GeminiProvider
@@ -10,6 +11,7 @@ __all__ = [
     "LLMProvider",
     "ProviderError",
     "ProviderConfig",
+    "NvidiaProvider",
     "OmniRouteProvider",
     "OllamaProvider",
     "GeminiProvider",

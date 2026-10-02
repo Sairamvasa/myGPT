@@ -1,408 +1,617 @@
-"""Provider factory and registry for managing LLM providers."""
+﻿"""Multi-provider LLM registry for MyGPT.
+
+Supports NVIDIA, Gemini, OmniRoute (cloud providers) and Ollama (local-only in
+production).  Provider selection follows alias precedence:
+
+    MODEL_ROUTER_PROVIDER > PROVIDER_PRIMARY > LLM_PROVIDER > AI_PROVIDER
+"""
 
 import os
 import logging
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Generator, AsyncGenerator
+from urllib.parse import urlparse
+
 from providers.base import LLMProvider, ProviderConfig, ProviderError
+from providers.nvidia import NvidiaProvider
+from providers.gemini import GeminiProvider
 from providers.omniroute import OmniRouteProvider
 from providers.ollama import OllamaProvider
-from providers.gemini import GeminiProvider
 
 logger = logging.getLogger("MyGPT.ProviderRegistry")
 
+# ---------------------------------------------------------------------------
+# Provider classification
+# ---------------------------------------------------------------------------
+
+CLOUD_PROVIDERS = frozenset({"nvidia", "gemini", "omniroute"})
+LOCAL_PROVIDERS = frozenset({"ollama"})
+KNOWN_PROVIDERS = CLOUD_PROVIDERS | LOCAL_PROVIDERS
+
+_STREAMING_METHODS = frozenset({"stream_generate", "astream_generate"})
+
+
+# ---------------------------------------------------------------------------
+# Per-provider config builders
+# ---------------------------------------------------------------------------
+
+def _build_nvidia_config() -> ProviderConfig:
+    api_key = os.getenv("NVIDIA_API_KEY", "")
+    base_url = os.getenv(
+        "NVIDIA_BASE_URL",
+        "https://integrate.api.nvidia.com/v1",
+    ).rstrip("/")
+    text_model = os.getenv("NVIDIA_TEXT_MODEL", "deepseek-ai/deepseek-v4-flash")
+    vision_model = os.getenv("NVIDIA_VISION_MODEL", "deepseek-ai/deepseek-v4.1-flash")
+    timeout = float(os.getenv("NVIDIA_TIMEOUT", "60"))
+    return ProviderConfig(
+        name="nvidia",
+        model=text_model,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        extra={"text_model": text_model, "vision_model": vision_model},
+    )
+
+
+def _build_gemini_config() -> ProviderConfig:
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    timeout = float(os.getenv("GEMINI_TIMEOUT", "60"))
+    return ProviderConfig(
+        name="gemini",
+        model=model,
+        api_key=api_key,
+        base_url=None,
+        timeout=timeout,
+        extra={"max_retries": 2, "base_delay": 1.0, "max_delay": 8.0},
+    )
+
+
+def _build_omniroute_config() -> ProviderConfig:
+    api_key = os.getenv("OMNIROUTE_API_KEY", "")
+    base_url = os.getenv(
+        "OMNIROUTE_BASE_URL",
+        "http://localhost:8000",
+    ).rstrip("/")
+    model = os.getenv("OMNIROUTE_MODEL", "gpt-4")
+    timeout = float(os.getenv("OMNIROUTE_TIMEOUT", "60"))
+    return ProviderConfig(
+        name="omniroute",
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+    )
+
+
+def _build_ollama_config() -> ProviderConfig:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    model = os.getenv("OLLAMA_MODEL", "llama3")
+    timeout = float(os.getenv("OLLAMA_TIMEOUT", "60"))
+    return ProviderConfig(
+        name="ollama",
+        model=model,
+        api_key=None,
+        base_url=base_url,
+        timeout=timeout,
+        extra={"num_ctx": 4096, "keep_alive": "10m"},
+    )
+
+
+_PROVIDER_BUILDERS: Dict[str, Any] = {
+    "nvidia": _build_nvidia_config,
+    "gemini": _build_gemini_config,
+    "omniroute": _build_omniroute_config,
+    "ollama": _build_ollama_config,
+}
+
+_PROVIDER_CLASSES: Dict[str, Any] = {
+    "nvidia": NvidiaProvider,
+    "gemini": GeminiProvider,
+    "omniroute": OmniRouteProvider,
+    "ollama": OllamaProvider,
+}
+
+
+def _is_local_ollama(provider: LLMProvider) -> bool:
+    """Return True when *provider* is an Ollama pointing at localhost."""
+
+    if not isinstance(provider, OllamaProvider):
+        return False
+    hostname = urlparse(provider.config.base_url or "").hostname
+    return hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
 
 class ProviderRegistry:
-    """Registry for managing LLM providers with fallback support."""
+    """Provider registry with fallback-chain support."""
 
     def __init__(self):
         self._providers: Dict[str, LLMProvider] = {}
         self._primary_provider: Optional[str] = None
         self._fallback_chain: List[str] = []
 
-    def register(self, name: str, provider: LLMProvider, is_primary: bool = False, is_fallback: bool = False):
+    # -- mutation ----------------------------------------------------------
+
+    def register(
+        self,
+        name: str,
+        provider: LLMProvider,
+        is_primary: bool = False,
+        is_fallback: bool = False,
+    ):
         """Register a provider."""
+
         self._providers[name] = provider
+
         if is_primary:
             self._primary_provider = name
-            self._fallback_chain = [item for item in self._fallback_chain if item != name]
+            self._fallback_chain = [
+                item for item in self._fallback_chain
+                if item != name
+            ]
         elif is_fallback and name not in self._fallback_chain:
             self._fallback_chain.append(name)
-        logger.info("Registered provider: %s (primary=%s, fallback=%s)", name, is_primary, is_fallback)
+
+        logger.info(
+            "Registered provider: %s (primary=%s, fallback=%s)",
+            name,
+            is_primary,
+            is_fallback,
+        )
+
+    def unregister(self, name: str):
+        """Remove a provider from the registry."""
+        self._providers.pop(name, None)
+        if self._primary_provider == name:
+            self._primary_provider = None
+        self._fallback_chain = [
+            item for item in self._fallback_chain if item != name
+        ]
+
+    # -- lookup ------------------------------------------------------------
 
     def get(self, name: str) -> Optional[LLMProvider]:
         """Get a provider by name."""
+
         return self._providers.get(name)
 
     def get_primary(self) -> Optional[LLMProvider]:
         """Get the primary provider."""
+
         if self._primary_provider:
             return self._providers.get(self._primary_provider)
         return None
 
     def get_fallback_chain(self) -> List[LLMProvider]:
-        """Get the fallback chain as a list of providers."""
-        return [self._providers[name] for name in self._fallback_chain if name in self._providers]
+        """Return fallback providers in order."""
+
+        return [
+            self._providers[name]
+            for name in self._fallback_chain
+            if name in self._providers
+        ]
+
+    # -- execution ---------------------------------------------------------
+
+    def _providers_to_try(
+        self,
+        primary_only: bool = False,
+    ) -> List[LLMProvider]:
+        """Return the ordered list of providers to attempt."""
+
+        result: List[LLMProvider] = []
+        primary = self.get_primary()
+        if primary is not None:
+            result.append(primary)
+        if not primary_only:
+            for name in self._fallback_chain:
+                provider = self._providers.get(name)
+                if provider is not None and provider not in result:
+                    result.append(provider)
+        return result
+
+    def _all_providers_failed_error(
+        self,
+        last_error: Optional[Exception],
+    ) -> ProviderError:
+        """Build the canonical 'all providers failed' error."""
+
+        if last_error is None:
+            return ProviderError(
+                kind="all_providers_failed",
+                user_message="No LLM provider is available.",
+                status_code=503,
+            )
+
+        return ProviderError(
+            kind="all_providers_failed",
+            user_message=(
+                f"All LLM providers failed. Last error: {last_error}"
+            ),
+            status_code=503,
+            retry_after=getattr(last_error, "retry_after", None),
+            original_exception=last_error,
+        )
+
+    def _make_provider_error(
+        self,
+        provider: LLMProvider,
+        exc: Exception,
+    ) -> ProviderError:
+        """Normalise a raw exception into a ProviderError."""
+
+        if isinstance(exc, ProviderError):
+            return exc
+
+        return ProviderError(
+            kind="unknown_error",
+            user_message=f"{provider.provider_name} failed to respond.",
+            status_code=503,
+            original_exception=exc,
+        )
 
     def execute_with_fallback(
         self,
         method_name: str,
-        *args,
+        *args: Any,
         primary_only: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ):
+        """Execute *method_name* on the primary provider, falling back.
+
+        For streaming methods (``stream_generate`` / ``astream_generate``)
+        a generator is returned so the caller can iterate lazily.
         """
-        Execute a method on the primary provider with fallback support.
 
-        Args:
-            method_name: Name of the method to call (e.g., 'generate', 'stream_generate')
-            primary_only: If True, don't try fallbacks
-            *args, **kwargs: Arguments to pass to the method
+        providers = self._providers_to_try(primary_only)
 
-        Returns:
-            Result from the first successful provider
+        if method_name in _STREAMING_METHODS:
+            return self._stream_with_fallback(
+                method_name, providers, args, kwargs
+            )
 
-        Raises:
-            ProviderError: If all providers fail
-        """
-        if method_name == "stream_generate":
-            return self._stream_with_fallback(*args, primary_only=primary_only, **kwargs)
-
-        # Try primary provider first
-        primary = self.get_primary()
-        if primary:
-            try:
-                method = getattr(primary, method_name)
-                return method(*args, **kwargs)
-            except ProviderError as e:
-                logger.warning("Primary provider '%s' failed: %s", primary.provider_name, e.kind)
-                if primary_only:
-                    raise
-            except Exception as e:
-                logger.warning("Primary provider '%s' failed with unexpected %s", primary.provider_name, type(e).__name__)
-                if primary_only:
-                    raise ProviderError("unknown_error", str(e), 500, original_exception=e) from e
-
-        # Try fallback providers
-        for fallback in self.get_fallback_chain():
-            try:
-                method = getattr(fallback, method_name)
-                logger.info("Falling back to provider: %s", fallback.provider_name)
-                return method(*args, **kwargs)
-            except ProviderError as e:
-                logger.warning("Fallback provider '%s' failed: %s", fallback.provider_name, e.kind)
-                continue
-            except Exception as e:
-                logger.warning("Fallback provider '%s' failed with unexpected %s", fallback.provider_name, type(e).__name__)
-                continue
-
-        # All providers failed
-        raise ProviderError(
-            kind="all_providers_failed",
-            user_message="All LLM providers failed to respond.",
-            status_code=503,
+        return self._call_with_fallback(
+            method_name, providers, args, kwargs
         )
 
-    @staticmethod
-    def _without_duplicate_prefix(chunk: str, emitted: str) -> str:
-        if not emitted or not chunk:
-            return chunk
-        if chunk.startswith(emitted):
-            return chunk[len(emitted):]
-        for size in range(min(len(emitted), len(chunk)), 0, -1):
-            if emitted[-size:] == chunk[:size]:
-                return chunk[size:]
-        return chunk
+    def _call_with_fallback(
+        self,
+        method_name: str,
+        providers: List[LLMProvider],
+        args: tuple,
+        kwargs: dict,
+    ) -> Any:
+        """Synchronous fallback for non-streaming methods."""
 
-    def _stream_with_fallback(self, *args, primary_only: bool = False, **kwargs):
-        providers = []
-        primary = self.get_primary()
-        if primary:
-            providers.append(primary)
-        if not primary_only:
-            providers.extend(self.get_fallback_chain())
+        last_error: Optional[ProviderError] = None
 
-        emitted = ""
-        last_error = None
         for provider in providers:
             try:
-                stream = getattr(provider, "stream_generate")(*args, **kwargs)
-                for chunk in stream:
-                    if not chunk:
-                        continue
-                    chunk = self._without_duplicate_prefix(chunk, emitted)
-                    if chunk:
-                        emitted += chunk
-                        yield chunk
-                return
+                method = getattr(provider, method_name)
+                result = method(*args, **kwargs)
+                if result is not None:
+                    return result
             except ProviderError as exc:
                 last_error = exc
-                logger.warning("Provider '%s' stream failed: %s", provider.provider_name, exc.kind)
-                if emitted:
-                    raise
+                logger.warning(
+                    "Provider %s failed: %s",
+                    provider.provider_name,
+                    exc.kind,
+                )
             except Exception as exc:
-                last_error = exc
-                logger.warning("Provider '%s' stream failed with unexpected %s", provider.provider_name, type(exc).__name__)
-                if emitted:
-                    raise
+                last_error = self._make_provider_error(provider, exc)
+                logger.exception(
+                    "Provider %s raised %s",
+                    provider.provider_name,
+                    type(exc).__name__,
+                )
 
-        if last_error and primary_only:
-            raise last_error
-        raise ProviderError(
-            kind="all_providers_failed",
-            user_message="All LLM providers failed to respond.",
-            status_code=503,
-            original_exception=last_error if isinstance(last_error, Exception) else None,
-        )
+        raise self._all_providers_failed_error(last_error)
+
+    def _stream_with_fallback(
+        self,
+        method_name: str,
+        providers: List[LLMProvider],
+        args: tuple,
+        kwargs: dict,
+    ) -> Generator[str, None, None]:
+        """Streaming fallback — tries each provider in sequence."""
+
+        last_error: Optional[ProviderError] = None
+
+        for provider in providers:
+            try:
+                method = getattr(provider, method_name)
+                stream = method(*args, **kwargs)
+
+                emitted = False
+                for chunk in stream:
+                    if chunk:
+                        emitted = True
+                        yield chunk
+
+                if emitted:
+                    return
+                logger.warning(
+                    "Provider %s produced an empty stream.",
+                    provider.provider_name,
+                )
+            except ProviderError as exc:
+                last_error = exc
+                logger.warning(
+                    "Provider %s stream failed: %s",
+                    provider.provider_name,
+                    exc.kind,
+                )
+            except Exception as exc:
+                last_error = self._make_provider_error(provider, exc)
+                logger.exception(
+                    "Provider %s stream raised %s",
+                    provider.provider_name,
+                    type(exc).__name__,
+                )
+
+        raise self._all_providers_failed_error(last_error)
 
     async def aexecute_with_fallback(
         self,
         method_name: str,
-        *args,
+        *args: Any,
         primary_only: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ):
-        """Execute an async method with fallback support."""
+        """Async execution with fallback."""
+
+        providers = self._providers_to_try(primary_only)
+
         if method_name == "astream_generate":
-            return self._astream_with_fallback(*args, primary_only=primary_only, **kwargs)
+            async def _astream():
+                last_error: Optional[ProviderError] = None
+                for provider in providers:
+                    try:
+                        method = getattr(provider, method_name)
+                        stream = method(*args, **kwargs)
+                        result = await stream
+                        emitted = False
+                        async for chunk in result:
+                            if chunk:
+                                emitted = True
+                                yield chunk
+                        if emitted:
+                            return
+                    except ProviderError as exc:
+                        last_error = exc
+                    except Exception as exc:
+                        last_error = self._make_provider_error(provider, exc)
+                raise self._all_providers_failed_error(last_error)
+            return _astream()
 
-        primary = self.get_primary()
-        if primary:
-            try:
-                method = getattr(primary, method_name)
-                return await method(*args, **kwargs)
-            except ProviderError as e:
-                logger.warning("Primary provider '%s' failed: %s", primary.provider_name, e.kind)
-                if primary_only:
-                    raise
-            except Exception as e:
-                logger.warning("Primary provider '%s' failed with unexpected %s", primary.provider_name, type(e).__name__)
-                if primary_only:
-                    raise ProviderError("unknown_error", str(e), 500, original_exception=e) from e
-
-        for fallback in self.get_fallback_chain():
-            try:
-                method = getattr(fallback, method_name)
-                logger.info("Falling back to provider: %s", fallback.provider_name)
-                return await method(*args, **kwargs)
-            except ProviderError as e:
-                logger.warning("Fallback provider '%s' failed: %s", fallback.provider_name, e.kind)
-                continue
-            except Exception as e:
-                logger.warning("Fallback provider '%s' failed with unexpected %s", fallback.provider_name, type(e).__name__)
-                continue
-
-        raise ProviderError(
-            kind="all_providers_failed",
-            user_message="All LLM providers failed to respond.",
-            status_code=503,
-        )
-
-    async def _astream_with_fallback(self, *args, primary_only: bool = False, **kwargs):
-        providers = []
-        primary = self.get_primary()
-        if primary:
-            providers.append(primary)
-        if not primary_only:
-            providers.extend(self.get_fallback_chain())
-
-        emitted = ""
         last_error = None
         for provider in providers:
             try:
-                stream = getattr(provider, "astream_generate")(*args, **kwargs)
-                async for chunk in stream:
-                    if not chunk:
-                        continue
-                    chunk = self._without_duplicate_prefix(chunk, emitted)
-                    if chunk:
-                        emitted += chunk
-                        yield chunk
-                return
+                method = getattr(provider, method_name)
+                result = await method(*args, **kwargs)
+                if result is not None:
+                    return result
             except ProviderError as exc:
                 last_error = exc
-                logger.warning("Provider '%s' stream failed: %s (Details: %s)", provider.provider_name, exc.kind, exc.user_message)
-                if emitted:
-                    raise
             except Exception as exc:
-                last_error = exc
-                logger.warning("Provider '%s' stream failed with unexpected error %s: %s", provider.provider_name, type(exc).__name__, str(exc))
-                if emitted:
-                    raise
+                last_error = self._make_provider_error(provider, exc)
+        raise self._all_providers_failed_error(last_error)
 
-        if last_error and primary_only:
-            raise last_error
-        raise ProviderError(
-            kind="all_providers_failed",
-            user_message="All LLM providers failed to respond.",
-            status_code=503,
-            original_exception=last_error if isinstance(last_error, Exception) else None,
-        )
+    # -- cleanup -----------------------------------------------------------
 
     def close_all(self):
-        """Close all providers."""
+        """Close provider resources."""
+
         for provider in self._providers.values():
             if hasattr(provider, "close"):
-                provider.close()
+                try:
+                    provider.close()
+                except Exception:
+                    logger.exception(
+                        "Failed to close provider %s",
+                        provider.provider_name,
+                    )
+
+    async def aclose_all(self):
+        """Close async provider resources."""
+
+        for provider in self._providers.values():
             if hasattr(provider, "aclose"):
-                # Can't await here, but we can note it
-                pass
+                try:
+                    await provider.aclose()
+                except Exception:
+                    logger.exception(
+                        "Failed to close async provider %s",
+                        provider.provider_name,
+                    )
 
 
-# Global registry instance
+# ---------------------------------------------------------------------------
+# Global registry + configuration
+# ---------------------------------------------------------------------------
+
 _registry: Optional[ProviderRegistry] = None
 
 
 def get_registry() -> ProviderRegistry:
     """Get or create the global provider registry."""
+
     global _registry
+
     if _registry is None:
         _registry = ProviderRegistry()
+
     return _registry
 
 
 def configure_providers_from_env() -> ProviderRegistry:
-    """Configure providers from environment variables."""
+    """Configure providers from environment variables.
+
+    Alias precedence: MODEL_ROUTER_PROVIDER > PROVIDER_PRIMARY >
+    LLM_PROVIDER > AI_PROVIDER.
+
+    In production (APP_ENV=production) local Ollama providers are never
+    registered — the function falls through to the next configured cloud
+    provider.
+    """
+
+    global _registry
+
     registry = get_registry()
+
+    # Clear any existing configuration.
     registry._providers.clear()
     registry._primary_provider = None
     registry._fallback_chain.clear()
 
-    # Determine which provider should be primary
-    ai_provider = (
-        os.getenv("PROVIDER_PRIMARY")
-        or os.getenv("LLM_PROVIDER")
-        or os.getenv("AI_PROVIDER")
-        or "ollama"
-    ).lower()
-    model_router_provider = os.getenv("MODEL_ROUTER_PROVIDER", "").lower()
-    app_env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
-    is_render = bool(os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER"))
-    is_production = app_env == "production" or is_render
+    app_env = os.getenv("APP_ENV", "development")
+    is_production = app_env == "production"
 
-    # OmniRoute configuration
-    omniroute_base_url = os.getenv("OMNIROUTE_BASE_URL")
-    omniroute_api_key = os.getenv("OMNIROUTE_API_KEY")
-    omniroute_model = os.getenv("OMNIROUTE_MODEL", "auto/best-chat")
+    # Walk aliases in precedence order to pick the primary.
+    primary_name = None
+    for env_var in (
+        "MODEL_ROUTER_PROVIDER",
+        "PROVIDER_PRIMARY",
+        "LLM_PROVIDER",
+        "AI_PROVIDER",
+    ):
+        value = os.getenv(env_var, "").strip().lower()
 
-    # Ollama configuration
-    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    ollama_api_key = os.getenv("OLLAMA_API_KEY", "")
-    ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
-    ollama_code_model = os.getenv("OLLAMA_CODE_MODEL", "codellama:7b")
-    ollama_extra = {
-        "num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "4096")),
-        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "10m"),
-    }
+        if not value or value not in KNOWN_PROVIDERS:
+            continue
 
-    # Gemini configuration
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    gemini_text_model = os.getenv("GEMINI_TEXT_MODEL", "gemini-1.5-flash")
-    gemini_vision_model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash")
-    gemini_extra = {
-        "max_retries": int(os.getenv("GEMINI_MAX_RETRIES", "2")),
-        "base_delay": float(os.getenv("GEMINI_BASE_DELAY", "1.0")),
-        "max_delay": float(os.getenv("GEMINI_MAX_DELAY", "8.0")),
-    }
+        if value in LOCAL_PROVIDERS and is_production:
+            logger.info(
+                "%s requested via %s but production refuses local providers",
+                value,
+                env_var,
+            )
+            continue
 
-    # Determine effective primary provider
-    # If MODEL_ROUTER_PROVIDER is set, use it; otherwise use AI_PROVIDER
-    effective_primary = model_router_provider or ai_provider
+        builder = _PROVIDER_BUILDERS.get(value)
+        if builder is None:
+            continue
 
-    # If production was configured with Ollama but a cloud provider is
-    # available, prefer the cloud provider. Otherwise fail clearly instead
-    # of sending requests to an unreachable local endpoint.
-    if is_production and effective_primary == "ollama":
-        if omniroute_api_key and omniroute_base_url:
-            effective_primary = "omniroute"
-        elif gemini_api_key:
-            effective_primary = "gemini"
-        else:
+        config = builder()
+
+        # Cloud providers require an API key.
+        if value in CLOUD_PROVIDERS and not config.api_key:
+            logger.warning(
+                "Provider %s requested but no API key is set", value,
+            )
+            continue
+
+        provider_cls = _PROVIDER_CLASSES[value]
+        provider = provider_cls(config)
+        registry.register(value, provider, is_primary=True)
+        primary_name = value
+        break
+
+    # Register fallback providers (other cloud providers with keys).
+    if primary_name is not None and is_production:
+        for env_var in (
+            "MODEL_ROUTER_PROVIDER",
+            "PROVIDER_PRIMARY",
+            "LLM_PROVIDER",
+            "AI_PROVIDER",
+        ):
+            value = os.getenv(env_var, "").strip().lower()
+
+            if not value or value not in CLOUD_PROVIDERS:
+                continue
+            if value == primary_name:
+                continue
+
+            builder = _PROVIDER_BUILDERS.get(value)
+            if builder is None:
+                continue
+
+            config = builder()
+            if not config.api_key:
+                continue
+
+            provider_cls = _PROVIDER_CLASSES[value]
+            provider = provider_cls(config)
+            registry.register(value, provider, is_fallback=True)
+
+    if primary_name is None:
+        if is_production:
             raise RuntimeError(
-                "A cloud provider must be configured in production. "
-                "Set AI_PROVIDER=gemini or AI_PROVIDER=omniroute and provide its credentials."
+                "No cloud LLM provider is configured for production."
             )
 
-    # Register OmniRoute if configured
-    if omniroute_base_url and omniroute_api_key:
-        omni_config = ProviderConfig(
-            name="omniroute",
-            model=omniroute_model,
-            api_key=omniroute_api_key,
-            base_url=omniroute_base_url,
-            timeout=float(os.getenv("OMNIROUTE_TIMEOUT", "60")),
-        )
-        registry.register("omniroute", OmniRouteProvider(omni_config),
-                         is_primary=(effective_primary == "omniroute"),
-                         is_fallback=(effective_primary != "omniroute"))
-        logger.info("OmniRoute provider registered (primary=%s)", effective_primary == "omniroute")
+        # Development fallback: try a local provider.
+        for env_var in (
+            "MODEL_ROUTER_PROVIDER",
+            "PROVIDER_PRIMARY",
+            "LLM_PROVIDER",
+            "AI_PROVIDER",
+        ):
+            value = os.getenv(env_var, "").strip().lower()
+            if value in LOCAL_PROVIDERS:
+                builder = _PROVIDER_BUILDERS.get(value)
+                if builder is None:
+                    continue
+                config = builder()
+                provider_cls = _PROVIDER_CLASSES[value]
+                provider = provider_cls(config)
+                registry.register(value, provider, is_primary=True)
+                primary_name = value
+                break
 
-    ollama_is_local = ollama_base_url.lower().startswith(
-        ("http://localhost", "http://127.0.0.1", "http://[::1]", "http://0.0.0.0")
+        if primary_name is None:
+            raise RuntimeError(
+                "No LLM provider is configured. "
+                "Set AI_PROVIDER (or LLM_PROVIDER / MODEL_ROUTER_PROVIDER) "
+                "and the corresponding API key."
+            )
+
+    logger.info(
+        "Provider registry configured: primary=%s, fallbacks=%s",
+        registry._primary_provider,
+        registry._fallback_chain,
     )
 
-    # A Render instance must not silently select a developer's local Ollama.
-    # Local Ollama remains the default for development.
-    allow_ollama = not (is_production and ollama_is_local)
-
-    # Register Ollama
-    if allow_ollama:
-        ollama_config = ProviderConfig(
-            name="ollama",
-            model=ollama_model,
-            api_key=ollama_api_key if ollama_api_key else None,
-            base_url=ollama_base_url,
-            extra=ollama_extra,
-        )
-        registry.register("ollama", OllamaProvider(ollama_config),
-                         is_primary=(effective_primary == "ollama"),
-                         is_fallback=True)
-        logger.info("Ollama provider registered (primary=%s)", effective_primary == "ollama")
-
-    # Register Ollama Code model as separate provider for code tasks
-    if allow_ollama:
-        ollama_code_config = ProviderConfig(
-            name="ollama_code",
-            model=ollama_code_model,
-            api_key=ollama_api_key if ollama_api_key else None,
-            base_url=ollama_base_url,
-            extra=ollama_extra,
-        )
-        registry.register("ollama_code", OllamaProvider(ollama_code_config),
-                         is_primary=False,
-                         is_fallback=True)
-
-    # Register Gemini if API key is available
-    if gemini_api_key:
-        gemini_config = ProviderConfig(
-            name="gemini",
-            model=gemini_text_model,
-            api_key=gemini_api_key,
-            extra=gemini_extra,
-        )
-        registry.register("gemini", GeminiProvider(gemini_config),
-                         is_primary=(effective_primary == "gemini"),
-                         is_fallback=True)
-        logger.info("Gemini provider registered (primary=%s)", effective_primary == "gemini")
-
-    if effective_primary in registry._providers:
-        registry._primary_provider = effective_primary
-
-    # If no primary was explicitly set, default to OmniRoute if available, then Ollama
-    if not registry._primary_provider:
-        if "omniroute" in registry._providers:
-            registry._primary_provider = "omniroute"
-            logger.info("Defaulting to OmniRoute as primary provider")
-        elif "gemini" in registry._providers:
-            registry._primary_provider = "gemini"
-            logger.info("Defaulting to Gemini as primary provider")
-        elif "ollama" in registry._providers and not is_production:
-            registry._primary_provider = "ollama"
-            logger.info("Defaulting to Ollama as primary provider")
-
-    if is_production and not registry._primary_provider:
-        raise RuntimeError(
-            "No cloud LLM provider is configured for production. "
-            "Configure Gemini or OmniRoute environment variables."
-        )
-
     return registry
+
+
+def get_routed_provider_metadata() -> tuple:
+    """Return (provider_name, model) for the configured provider."""
+
+    registry = get_registry()
+    provider = registry.get_primary()
+
+    if provider is None:
+        return ("unknown", os.getenv("NVIDIA_TEXT_MODEL", "deepseek-ai/deepseek-v4-flash"))
+
+    return (provider.provider_name, provider.config.model)
+
+
+def reload_registry() -> ProviderRegistry:
+    """Reload the provider configuration from environment."""
+
+    global _registry
+
+    if _registry is not None:
+        _registry.close_all()
+
+    _registry = ProviderRegistry()
+
+    return configure_providers_from_env()
+
+
+# Configure immediately when an API key is present at import time.
+if os.getenv("NVIDIA_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("OMNIROUTE_API_KEY"):
+    try:
+        configure_providers_from_env()
+    except Exception as exc:
+        logger.warning(
+            "Provider registry was not configured during module import: %s",
+            type(exc).__name__,
+        )

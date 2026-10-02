@@ -1,0 +1,171 @@
+warning: in the working copy of 'backend/providers/gemini.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/providers/registry.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/backend/providers/gemini.py b/backend/providers/gemini.py[m
+[1mindex e069dd8..82c2c3c 100644[m
+[1m--- a/backend/providers/gemini.py[m
+[1m+++ b/backend/providers/gemini.py[m
+[36m@@ -140,7 +140,10 @@[m [mclass GeminiProvider(LLMProvider):[m
+                     ),[m
+                 )[m
+                 for chunk in response:[m
+[31m-                    text = getattr(chunk, "text", None)[m
+[32m+[m[32m                    try:[m
+[32m+[m[32m                        text = getattr(chunk, "text", None)[m
+[32m+[m[32m                    except ValueError:[m
+[32m+[m[32m                        text = None[m
+                     if text:[m
+                         yield text[m
+                 return[m
+[1mdiff --git a/backend/providers/registry.py b/backend/providers/registry.py[m
+[1mindex 98176e0..f822c15 100644[m
+[1m--- a/backend/providers/registry.py[m
+[1m+++ b/backend/providers/registry.py[m
+[36m@@ -216,10 +216,10 @@[m [mclass ProviderRegistry:[m
+                 return[m
+             except ProviderError as exc:[m
+                 last_error = exc[m
+[31m-                logger.warning("Provider '%s' async stream failed: %s", provider.provider_name, exc.kind)[m
+[32m+[m[32m                logger.warning("Provider '%s' stream failed: %s (Details: %s)", provider.provider_name, exc.kind, exc.user_message)[m
+             except Exception as exc:[m
+                 last_error = exc[m
+[31m-                logger.warning("Provider '%s' async stream failed with unexpected %s", provider.provider_name, type(exc).__name__)[m
+[32m+[m[32m                logger.warning("Provider '%s' stream failed with unexpected error %s: %s", provider.provider_name, type(exc).__name__, str(exc))[m
+ [m
+         if last_error and primary_only:[m
+             raise last_error[m
+[36m@@ -260,8 +260,16 @@[m [mdef configure_providers_from_env() -> ProviderRegistry:[m
+     registry._fallback_chain.clear()[m
+ [m
+     # Determine which provider should be primary[m
+[31m-    ai_provider = os.getenv("AI_PROVIDER", "ollama").lower()[m
+[32m+[m[32m    ai_provider = ([m
+[32m+[m[32m        os.getenv("PROVIDER_PRIMARY")[m
+[32m+[m[32m        or os.getenv("LLM_PROVIDER")[m
+[32m+[m[32m        or os.getenv("AI_PROVIDER")[m
+[32m+[m[32m        or "ollama"[m
+[32m+[m[32m    ).lower()[m
+     model_router_provider = os.getenv("MODEL_ROUTER_PROVIDER", "").lower()[m
+[32m+[m[32m    app_env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()[m
+[32m+[m[32m    is_render = bool(os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER"))[m
+[32m+[m[32m    is_production = app_env == "production" or is_render[m
+ [m
+     # OmniRoute configuration[m
+     omniroute_base_url = os.getenv("OMNIROUTE_BASE_URL")[m
+[36m@@ -292,6 +300,20 @@[m [mdef configure_providers_from_env() -> ProviderRegistry:[m
+     # If MODEL_ROUTER_PROVIDER is set, use it; otherwise use AI_PROVIDER[m
+     effective_primary = model_router_provider or ai_provider[m
+ [m
+[32m+[m[32m    # If production was configured with Ollama but a cloud provider is[m
+[32m+[m[32m    # available, prefer the cloud provider. Otherwise fail clearly instead[m
+[32m+[m[32m    # of sending requests to an unreachable local endpoint.[m
+[32m+[m[32m    if is_production and effective_primary == "ollama":[m
+[32m+[m[32m        if omniroute_api_key and omniroute_base_url:[m
+[32m+[m[32m            effective_primary = "omniroute"[m
+[32m+[m[32m        elif gemini_api_key:[m
+[32m+[m[32m            effective_primary = "gemini"[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            raise RuntimeError([m
+[32m+[m[32m                "A cloud provider must be configured in production. "[m
+[32m+[m[32m                "Set AI_PROVIDER=gemini or AI_PROVIDER=omniroute and provide its credentials."[m
+[32m+[m[32m            )[m
+[32m+[m
+     # Register OmniRoute if configured[m
+     if omniroute_base_url and omniroute_api_key:[m
+         omni_config = ProviderConfig([m
+[36m@@ -306,30 +328,40 @@[m [mdef configure_providers_from_env() -> ProviderRegistry:[m
+                          is_fallback=(effective_primary != "omniroute"))[m
+         logger.info("OmniRoute provider registered (primary=%s)", effective_primary == "omniroute")[m
+ [m
+[31m-    # Register Ollama[m
+[31m-    ollama_config = ProviderConfig([m
+[31m-        name="ollama",[m
+[31m-        model=ollama_model,[m
+[31m-        api_key=ollama_api_key if ollama_api_key else None,[m
+[31m-        base_url=ollama_base_url,[m
+[31m-        extra=ollama_extra,[m
+[32m+[m[32m    ollama_is_local = ollama_base_url.lower().startswith([m
+[32m+[m[32m        ("http://localhost", "http://127.0.0.1", "http://[::1]", "http://0.0.0.0")[m
+     )[m
+[31m-    registry.register("ollama", OllamaProvider(ollama_config),[m
+[31m-                     is_primary=(effective_primary == "ollama" and not (omniroute_base_url and omniroute_api_key and effective_primary == "omniroute")),[m
+[31m-                     is_fallback=True)[m
+[31m-    logger.info("Ollama provider registered (primary=%s)", effective_primary == "ollama")[m
+[32m+[m
+[32m+[m[32m    # A Render instance must not silently select a developer's local Ollama.[m
+[32m+[m[32m    # Local Ollama remains the default for development.[m
+[32m+[m[32m    allow_ollama = not (is_production and ollama_is_local)[m
+[32m+[m
+[32m+[m[32m    # Register Ollama[m
+[32m+[m[32m    if allow_ollama:[m
+[32m+[m[32m        ollama_config = ProviderConfig([m
+[32m+[m[32m            name="ollama",[m
+[32m+[m[32m            model=ollama_model,[m
+[32m+[m[32m            api_key=ollama_api_key if ollama_api_key else None,[m
+[32m+[m[32m            base_url=ollama_base_url,[m
+[32m+[m[32m            extra=ollama_extra,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        registry.register("ollama", OllamaProvider(ollama_config),[m
+[32m+[m[32m                         is_primary=(effective_primary == "ollama"),[m
+[32m+[m[32m                         is_fallback=True)[m
+[32m+[m[32m        logger.info("Ollama provider registered (primary=%s)", effective_primary == "ollama")[m
+ [m
+     # Register Ollama Code model as separate provider for code tasks[m
+[31m-    ollama_code_config = ProviderConfig([m
+[31m-        name="ollama_code",[m
+[31m-        model=ollama_code_model,[m
+[31m-        api_key=ollama_api_key if ollama_api_key else None,[m
+[31m-        base_url=ollama_base_url,[m
+[31m-        extra=ollama_extra,[m
+[31m-    )[m
+[31m-    registry.register("ollama_code", OllamaProvider(ollama_code_config),[m
+[31m-                     is_primary=False,[m
+[31m-                     is_fallback=True)[m
+[32m+[m[32m    if allow_ollama:[m
+[32m+[m[32m        ollama_code_config = ProviderConfig([m
+[32m+[m[32m            name="ollama_code",[m
+[32m+[m[32m            model=ollama_code_model,[m
+[32m+[m[32m            api_key=ollama_api_key if ollama_api_key else None,[m
+[32m+[m[32m            base_url=ollama_base_url,[m
+[32m+[m[32m            extra=ollama_extra,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        registry.register("ollama_code", OllamaProvider(ollama_code_config),[m
+[32m+[m[32m                         is_primary=False,[m
+[32m+[m[32m                         is_fallback=True)[m
+ [m
+     # Register Gemini if API key is available[m
+     if gemini_api_key:[m
+[36m@@ -340,20 +372,29 @@[m [mdef configure_providers_from_env() -> ProviderRegistry:[m
+             extra=gemini_extra,[m
+         )[m
+         registry.register("gemini", GeminiProvider(gemini_config),[m
+[31m-                         is_primary=(effective_primary == "gemini" and not (omniroute_base_url and omniroute_api_key and effective_primary == "omniroute")),[m
+[32m+[m[32m                         is_primary=(effective_primary == "gemini"),[m
+                          is_fallback=True)[m
+         logger.info("Gemini provider registered (primary=%s)", effective_primary == "gemini")[m
+ [m
+[32m+[m[32m    if effective_primary in registry._providers:[m
+[32m+[m[32m        registry._primary_provider = effective_primary[m
+[32m+[m
+     # If no primary was explicitly set, default to OmniRoute if available, then Ollama[m
+     if not registry._primary_provider:[m
+         if "omniroute" in registry._providers:[m
+             registry._primary_provider = "omniroute"[m
+             logger.info("Defaulting to OmniRoute as primary provider")[m
+[31m-        elif "ollama" in registry._providers:[m
+[31m-            registry._primary_provider = "ollama"[m
+[31m-            logger.info("Defaulting to Ollama as primary provider")[m
+         elif "gemini" in registry._providers:[m
+             registry._primary_provider = "gemini"[m
+             logger.info("Defaulting to Gemini as primary provider")[m
+[32m+[m[32m        elif "ollama" in registry._providers and not is_production:[m
+[32m+[m[32m            registry._primary_provider = "ollama"[m
+[32m+[m[32m            logger.info("Defaulting to Ollama as primary provider")[m
+[32m+[m
+[32m+[m[32m    if is_production and not registry._primary_provider:[m
+[32m+[m[32m        raise RuntimeError([m
+[32m+[m[32m            "No cloud LLM provider is configured for production. "[m
+[32m+[m[32m            "Configure Gemini or OmniRoute environment variables."[m
+[32m+[m[32m        )[m
+ [m
+     return registry[m
+\ No newline at end of file[m

@@ -198,11 +198,7 @@ def decide(user_message: str):
         "project owner", "project developer", "who wrote this", "who created this",
         "about the project", "about the file", "about the document",
     ]
-    contextual_result_question = re.search(
-        r"\b(?:what|how|why|where|which)\b.*\b(?:output|result|return(?:s)?|value)\b",
-        message,
-    )
-    if contains_phrase(DOC_KEYWORDS) or contextual_result_question:
+    if contains_phrase(DOC_KEYWORDS):
         return ACTION_RAG
 
     # 7. Factual questions where freshness matters -> web

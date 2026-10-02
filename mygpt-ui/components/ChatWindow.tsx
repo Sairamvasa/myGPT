@@ -102,9 +102,17 @@ export default function ChatWindow({ chatId, onChatCreated }: Props) {
     setMessages(update);
   };
 
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
+    }
+  }, [messages]);
+
   return (
     <div className="chat-window">
-      <div className="chat-scroll-area">
+      <div className="chat-scroll-area" ref={scrollAreaRef}>
         {messages.length === 0 ? (
           <ConversationEmptyState />
         ) : (

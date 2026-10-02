@@ -42,7 +42,7 @@ BLOCKED_NAMES = {
     "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
     "mmap", "mmap", "platform", "sysconfig", "site", "importlib",
     "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-    "pathlib", "shutil", "requests",
+    "pathlib", "shutil", "requests", "io",
 }
 
 # Dangerous modules that should never be imported
@@ -55,7 +55,7 @@ BLOCKED_IMPORTS = {
     "ctypes", "subprocess", "signal", "resource", "gc", "weakref",
     "inspect", "dis", "ast", "codeop", "code", "types", "builtins",
     "__main__", "__future__", "__builtin__", "builtins",
-    "pathlib", "shutil", "requests",
+    "pathlib", "shutil", "requests", "io",
 }
 
 

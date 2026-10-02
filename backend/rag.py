@@ -109,19 +109,38 @@ class RecursiveCharacterTextSplitter:
 # Per-user vector databases: {user_id: FAISS store}
 vector_stores = {}
 
+# Per-project vector databases: {"project_{project_id}": FAISS store}
+project_vector_stores = {}
+
 # Per-user uploaded file names: {user_id: set of filenames}
 uploaded_files_map = {}
 
+# Per-project uploaded file names: {"project_{project_id}": set of filenames}
+project_files_map = {}
+
 # Lazy load embedding model to prevent startup crashes.
 embeddings = None
+
+
+def _project_key(project_id):
+    """Return the namespace key used for project-scoped RAG."""
+    return f"project_{project_id}"
 
 
 def _user_index_dir(user_id):
     return RAG_STORAGE_DIR / str(user_id)
 
 
+def _project_index_dir(project_id):
+    return RAG_STORAGE_DIR / "projects" / str(project_id)
+
+
 def _manifest_path(user_id):
     return _user_index_dir(user_id) / "files.json"
+
+
+def _project_manifest_path(project_id):
+    return _project_index_dir(project_id) / "files.json"
 
 
 def _persist_user_state(user_id):
@@ -135,6 +154,20 @@ def _persist_user_state(user_id):
 
     with _manifest_path(user_id).open("w", encoding="utf-8") as manifest:
         json.dump(sorted(uploaded_files_map.get(user_id, set())), manifest)
+
+
+def _persist_project_state(project_id):
+    """Persist a project's FAISS index and file manifest to disk."""
+    vector_store = project_vector_stores.get(_project_key(project_id))
+    if vector_store is None:
+        return
+
+    index_dir = _project_index_dir(project_id)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    vector_store.save_local(str(index_dir))
+
+    with _project_manifest_path(project_id).open("w", encoding="utf-8") as manifest:
+        json.dump(sorted(project_files_map.get(_project_key(project_id), set())), manifest)
 
 
 def _load_user_state(user_id):
@@ -170,6 +203,42 @@ def _load_user_state(user_id):
         uploaded_files_map.pop(user_id, None)
         return False
 
+
+def _load_project_state(project_id):
+    """Load a project's FAISS index from disk into memory."""
+    key = _project_key(project_id)
+    if key in project_vector_stores:
+        return True
+
+    index_dir = _project_index_dir(project_id)
+    if not (index_dir / "index.faiss").exists():
+        return False
+
+    try:
+        project_vector_stores[key] = FAISS.load_local(
+            str(index_dir),
+            get_embeddings(),
+            allow_dangerous_deserialization=True,
+        )
+
+        manifest_path = _project_manifest_path(project_id)
+        if manifest_path.exists():
+            with manifest_path.open("r", encoding="utf-8") as manifest:
+                project_files_map[key] = set(json.load(manifest))
+        else:
+            project_files_map[key] = {
+                document.metadata.get("source", "")
+                for document in project_vector_stores[key].docstore._dict.values()
+                if document.metadata.get("source")
+            }
+
+        return True
+    except Exception as error:
+        print(f"Unable to load persisted project RAG index for project {project_id}: {error}")
+        project_vector_stores.pop(key, None)
+        project_files_map.pop(key, None)
+        return False
+
 def get_embeddings():
     global embeddings
     if embeddings is None:
@@ -183,9 +252,14 @@ def get_embeddings():
     return embeddings
 
 
-def process_pdf(pdf_path, user_id, source_filename=None):
+def process_pdf(pdf_path, user_id, source_filename=None, project_id=None):
     global vector_stores
     global uploaded_files_map
+    global project_vector_stores
+    global project_files_map
+
+    if project_id is not None:
+        return _process_pdf_project(pdf_path, source_filename, project_id)
 
     _load_user_state(user_id)
 
@@ -260,10 +334,72 @@ def process_pdf(pdf_path, user_id, source_filename=None):
     return len(documents)
 
 
-def process_text_file(file_path, user_id, source_filename=None):
+def _process_pdf_project(pdf_path, source_filename, project_id):
+    """Project-scoped PDF processing — reuses the same chunking/FAISS pipeline."""
+    key = _project_key(project_id)
+    _load_project_state(project_id)
+
+    reader = PdfReader(pdf_path)
+
+    filename = source_filename or os.path.basename(pdf_path)
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=200
+    )
+
+    documents = []
+
+    for page_number, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text()
+
+        if not page_text:
+            continue
+
+        chunks = splitter.split_text(page_text)
+
+        for chunk in chunks:
+            documents.append(
+                Document(
+                    page_content=chunk,
+                    metadata={
+                        "source": filename,
+                        "page": page_number,
+                        "project_id": project_id,
+                    }
+                )
+            )
+
+    if not documents:
+        raise ValueError(
+            f"No readable text found in {filename}"
+        )
+
+    if key not in project_vector_stores:
+        project_vector_stores[key] = FAISS.from_documents(documents, get_embeddings())
+    else:
+        project_vector_stores[key].add_documents(documents)
+
+    if key not in project_files_map:
+        project_files_map[key] = set()
+
+    project_files_map[key].add(filename)
+    _persist_project_state(project_id)
+
+    print(f"Project PDF processed: {filename} ({len(documents)} chunks)")
+
+    return len(documents)
+
+
+def process_text_file(file_path, user_id, source_filename=None, project_id=None):
     """Process any plain-text / code file (py, html, js, ts, css, json, csv, md, txt, etc.)"""
     global vector_stores
     global uploaded_files_map
+    global project_vector_stores
+    global project_files_map
+
+    if project_id is not None:
+        return _process_text_file_project(file_path, source_filename, project_id)
 
     _load_user_state(user_id)
 
@@ -309,6 +445,57 @@ def process_text_file(file_path, user_id, source_filename=None):
 
     print(f"Text/code file processed: {filename} ({len(documents)} chunks)")
     print("All uploaded files:", uploaded_files_map[user_id])
+
+    return len(documents)
+
+
+def _process_text_file_project(file_path, source_filename, project_id):
+    """Project-scoped text/code file processing."""
+    key = _project_key(project_id)
+    _load_project_state(project_id)
+
+    filename = source_filename or os.path.basename(file_path)
+
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        raw_text = f.read()
+
+    if not raw_text.strip():
+        raise ValueError(f"No readable text found in {filename}")
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=200
+    )
+
+    chunks = splitter.split_text(raw_text)
+
+    documents = [
+        Document(
+            page_content=chunk,
+            metadata={
+                "source": filename,
+                "page": i + 1,
+                "project_id": project_id,
+            }
+        )
+        for i, chunk in enumerate(chunks)
+    ]
+
+    if not documents:
+        raise ValueError(f"Could not split {filename} into chunks")
+
+    if key not in project_vector_stores:
+        project_vector_stores[key] = FAISS.from_documents(documents, get_embeddings())
+    else:
+        project_vector_stores[key].add_documents(documents)
+
+    if key not in project_files_map:
+        project_files_map[key] = set()
+
+    project_files_map[key].add(filename)
+    _persist_project_state(project_id)
+
+    print(f"Project text file processed: {filename} ({len(documents)} chunks)")
 
     return len(documents)
 
@@ -417,3 +604,89 @@ PAGE: {page}
     return "\n\n---\n\n".join(
         context_parts
     )
+
+
+def search_project_pdf(question, project_id, chunks_per_pdf=3):
+    """Search project-scoped RAG index. Returns formatted context or None."""
+    global project_vector_stores
+    global project_files_map
+
+    key = _project_key(project_id)
+    _load_project_state(project_id)
+
+    if key not in project_vector_stores:
+        return None
+
+    if key not in project_files_map or not project_files_map[key]:
+        return None
+
+    vector_store = project_vector_stores[key]
+    uploaded_files = project_files_map[key]
+
+    context_parts = []
+
+    context_parts.append(
+        "UPLOADED DOCUMENTS:\n" +
+        "\n".join(
+            f"- {filename}"
+            for filename in sorted(uploaded_files)
+        )
+    )
+
+    total_needed = chunks_per_pdf * len(uploaded_files)
+    fetch_k = max(total_needed * 4, 50)
+
+    try:
+        all_docs_with_scores = vector_store.similarity_search_with_score(
+            question, k=fetch_k
+        )
+    except Exception as error:
+        print(f"Project RAG search error: {error}")
+        return None
+
+    filtered_docs = [
+        (doc, score) for doc, score in all_docs_with_scores
+        if score <= RAG_RELEVANCE_THRESHOLD
+    ]
+
+    if not filtered_docs:
+        return None
+
+    docs_by_file: dict[str, list] = {}
+    for doc, score in filtered_docs:
+        source = doc.metadata.get("source", "")
+        if source not in docs_by_file:
+            docs_by_file[source] = []
+        if len(docs_by_file[source]) < chunks_per_pdf:
+            docs_by_file[source].append(doc)
+
+    for filename in sorted(uploaded_files):
+        documents = docs_by_file.get(filename, [])
+
+        if not documents:
+            continue
+
+        context_parts.append(
+            f"\n===== PROJECT DOCUMENT: "
+            f"{filename} =====\n"
+        )
+
+        for doc in documents:
+            page = doc.metadata.get(
+                "page",
+                "Unknown"
+            )
+
+            context_parts.append(
+                f"""
+SOURCE: {filename}
+PAGE: {page}
+
+{doc.page_content}
+"""
+            )
+
+    if len(context_parts) <= 1:
+        return None
+
+    return "\n\n---\n\n".join(context_parts)

@@ -1,122 +1,140 @@
 """Focused planner routing tests. Tests only decide() output, no execution."""
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(__file__))
+import pytest
 
 from agents.planner import decide, ACTION_CHAT, ACTION_PYTHON, ACTION_WEB, ACTION_RAG, ACTION_TIME, ACTION_CODE, ACTION_CODE_EXPLANATION, ACTION_CURRENT_INFO, ACTION_WEB_RESEARCH, ACTION_GENERAL_KNOWLEDGE, ACTION_MATH, ACTION_CREATIVE
 
-PASS = 0
-FAIL = 0
 
-def check(question, expected, label):
-    global PASS, FAIL
-    actual = decide(question)
-    ok = actual == expected
-    if ok:
-        PASS += 1
-        print(f"  PASS: {label}")
-    else:
-        FAIL += 1
-        print(f"  FAIL: {label}")
-        print(f"        Question: {question!r}")
-        print(f"        Expected: {expected}, Got: {actual}")
+class TestPlannerRouting:
+    """Tests for planner routing decisions."""
 
-print("=" * 70)
-print("FOCUSED PLANNER ROUTING TESTS")
-print("=" * 70)
+    # --- Arithmetic without "calculate" ---
+    def test_multiplication_without_keyword(self):
+        assert decide("What is 27 * 43?") == ACTION_PYTHON
 
-# --- Arithmetic without "calculate" ---
-print("\n--- Arithmetic (no keyword) ---")
-check("What is 27 * 43?", ACTION_PYTHON, "multiplication without keyword")
-check("What is 125 + 378?", ACTION_PYTHON, "addition without keyword")
-check("What is 144 / 12?", ACTION_PYTHON, "division without keyword")
-check("How much is 99 * 17?", ACTION_PYTHON, "how much is + multiplication")
+    def test_addition_without_keyword(self):
+        assert decide("What is 125 + 378?") == ACTION_PYTHON
 
-# --- Arithmetic with "calculate" ---
-print("\n--- Arithmetic (with keyword) ---")
-check("Calculate 27 * 43", ACTION_PYTHON, "calculate + multiplication")
-check("Compute 125 + 378", ACTION_PYTHON, "compute + addition")
+    def test_division_without_keyword(self):
+        assert decide("What is 144 / 12?") == ACTION_PYTHON
 
-# --- Percentage calculation ---
-print("\n--- Percentage ---")
-check("25% of 800?", ACTION_PYTHON, "percentage calculation")
+    def test_how_much_is_multiplication(self):
+        assert decide("How much is 99 * 17?") == ACTION_PYTHON
 
-# --- Subtraction word problem ---
-print("\n--- Word problems ---")
-check("If I have 5 apples and give away 2, how many remain?", ACTION_PYTHON, "subtraction word problem")
+    # --- Arithmetic with "calculate" ---
+    def test_calculate_multiplication(self):
+        assert decide("Calculate 27 * 43") == ACTION_PYTHON
 
-# --- Programming questions with math symbols (must stay chat) ---
-print("\n--- Programming context (must stay chat) ---")
-check("What does * mean in Python?", ACTION_CHAT, "operator question in Python")
-check("Explain 27 * 43 in this code", ACTION_CHAT, "code explanation with numbers")
+    def test_compute_addition(self):
+        assert decide("Compute 125 + 378") == ACTION_PYTHON
 
-# --- Sequence question stays chat ---
-print("\n--- Sequence / reasoning ---")
-check("What comes next: 2, 4, 8, 16, ?", ACTION_CHAT, "sequence question stays chat")
+    # --- Percentage calculation ---
+    def test_percentage_calculation(self):
+        assert decide("25% of 800?") == ACTION_PYTHON
 
-# --- Current/fresh factual routes web ---
-print("\n--- Factual: fresh vs stable ---")
-check("What is the capital of Andhra Pradesh?", ACTION_WEB, "capital question routes web")
-check("What is the population of India?", ACTION_WEB, "population question routes web")
-check("Who is the president of India?", ACTION_WEB, "current leader routes web")
+    # --- Subtraction word problem ---
+    def test_subtraction_word_problem(self):
+        assert decide("If I have 5 apples and give away 2, how many remain?") == ACTION_PYTHON
 
-# --- Stable factual stays general_knowledge ---
-print("\n--- Stable factual (general_knowledge) ---")
-check("Who wrote Romeo and Juliet?", ACTION_GENERAL_KNOWLEDGE, "stable literary fact routes general_knowledge")
-check("What is the largest ocean?", ACTION_GENERAL_KNOWLEDGE, "stable geographic fact routes general_knowledge")
+    # --- Programming questions with math symbols (must stay chat) ---
+    def test_operator_question_in_python(self):
+        assert decide("What does * mean in Python?") == ACTION_CHAT
 
-# --- Code generation routes code ---
-print("\n--- Code generation ---")
-check("Write a Java program to find GCD of two numbers", ACTION_CODE, "Java GCD code generation")
-check("Write a Python script to sort a list", ACTION_CODE, "Python script generation")
-check("Generate a function to calculate factorial", ACTION_CODE, "function generation")
+    def test_code_explanation_with_numbers(self):
+        assert decide("Explain 27 * 43 in this code") == ACTION_CHAT
 
-# --- Code explanation routes code_explanation ---
-print("\n--- Code explanation ---")
-check("Explain this code line by line", ACTION_CODE_EXPLANATION, "code explanation line by line")
-check("Explain this code", ACTION_CODE_EXPLANATION, "code explanation routes code_explanation")
-check("What does this code do?", ACTION_CODE_EXPLANATION, "what does code do routes code_explanation")
+    # --- Sequence question stays chat ---
+    def test_sequence_question_stays_chat(self):
+        assert decide("What comes next: 2, 4, 8, 16, ?") == ACTION_CHAT
 
-# --- Existing RAG routing unchanged ---
-print("\n--- RAG routing (unchanged) ---")
-check("What is the output?", ACTION_RAG, "output question routes rag")
-check("Find any problems in this code", ACTION_RAG, "code review routes rag")
+    # --- Current/fresh factual routes web ---
+    def test_capital_question_routes_web(self):
+        assert decide("What is the capital of Andhra Pradesh?") == ACTION_WEB
 
-# --- Current info routes current_info ---
-print("\n--- Current info routing ---")
-check("Today's petrol price in India", ACTION_CURRENT_INFO, "petrol price routes current_info")
-check("Current Bitcoin price", ACTION_CURRENT_INFO, "bitcoin price routes current_info")
-check("Weather today", ACTION_CURRENT_INFO, "weather today routes current_info")
+    def test_population_question_routes_web(self):
+        assert decide("What is the population of India?") == ACTION_WEB
 
-# --- Web research routes web_research ---
-print("\n--- Web research routing ---")
-check("Latest AI news", ACTION_WEB_RESEARCH, "latest news routes web_research")
-check("Recent developments in AI", ACTION_WEB_RESEARCH, "recent developments routes web_research")
+    def test_current_leader_routes_web(self):
+        assert decide("Who is the president of India?") == ACTION_WEB
 
-# --- Existing web routing unchanged ---
-print("\n--- Web routing (unchanged) ---")
-check("What is the weather today?", ACTION_CURRENT_INFO, "weather today routes current_info")
-check("What are the latest AI news headlines?", ACTION_WEB_RESEARCH, "latest news headlines routes web_research")
+    # --- Stable factual stays general_knowledge ---
+    def test_stable_literary_fact_routes_general_knowledge(self):
+        assert decide("Who wrote Romeo and Juliet?") == ACTION_GENERAL_KNOWLEDGE
 
-# --- Existing time routing unchanged ---
-print("\n--- Time routing (unchanged) ---")
-check("What time is it?", ACTION_TIME, "time question routes time")
-check("What is today's date?", ACTION_TIME, "date question routes time")
+    def test_stable_geographic_fact_routes_general_knowledge(self):
+        assert decide("What is the largest ocean?") == ACTION_GENERAL_KNOWLEDGE
 
-# --- Existing chat routing unchanged ---
-print("\n--- Chat routing (unchanged) ---")
-check("hi", ACTION_CHAT, "greeting stays chat")
-check("hello", ACTION_CHAT, "hello stays chat")
-check("How are you?", ACTION_CHAT, "how are you stays chat")
-check("Tell me a joke", ACTION_CREATIVE, "joke routes creative")
+    # --- Code generation routes code ---
+    def test_java_gcd_code_generation(self):
+        assert decide("Write a Java program to find GCD of two numbers") == ACTION_CODE
 
-# --- Summary ---
-print("\n" + "=" * 70)
-print(f"RESULTS: {PASS} passed, {FAIL} failed, {PASS + FAIL} total")
-if FAIL == 0:
-    print("ALL PLANNER TESTS PASSED")
-else:
-    print(f"{FAIL} TEST(S) FAILED")
-print("=" * 70)
-sys.exit(0 if FAIL == 0 else 1)
+    def test_python_script_generation(self):
+        assert decide("Write a Python script to sort a list") == ACTION_CODE
+
+    def test_function_generation(self):
+        assert decide("Generate a function to calculate factorial") == ACTION_CODE
+
+    # --- Code explanation routes code_explanation ---
+    def test_code_explanation_line_by_line(self):
+        assert decide("Explain this code line by line") == ACTION_CODE_EXPLANATION
+
+    def test_code_explanation_routes_code_explanation(self):
+        assert decide("Explain this code") == ACTION_CODE_EXPLANATION
+
+    def test_what_does_code_do_routes_code_explanation(self):
+        assert decide("What does this code do?") == ACTION_CODE_EXPLANATION
+
+    # --- Existing RAG routing unchanged ---
+    def test_output_question_routes_general_knowledge(self):
+        # "What is the output?" without code/document context should be general_knowledge
+        assert decide("What is the output?") == ACTION_GENERAL_KNOWLEDGE
+
+    def test_code_review_routes_rag(self):
+        assert decide("Find any problems in this code") == ACTION_RAG
+
+    # --- Current info routes current_info ---
+    def test_petrol_price_routes_current_info(self):
+        assert decide("Today's petrol price in India") == ACTION_CURRENT_INFO
+
+    def test_bitcoin_price_routes_current_info(self):
+        assert decide("Current Bitcoin price") == ACTION_CURRENT_INFO
+
+    def test_weather_today_routes_current_info(self):
+        assert decide("Weather today") == ACTION_CURRENT_INFO
+
+    # --- Web research routes web_research ---
+    def test_latest_news_routes_web_research(self):
+        assert decide("Latest AI news") == ACTION_WEB_RESEARCH
+
+    def test_recent_developments_routes_web_research(self):
+        assert decide("Recent developments in AI") == ACTION_WEB_RESEARCH
+
+    # --- Existing web routing unchanged ---
+    def test_weather_today_routes_current_info_2(self):
+        assert decide("What is the weather today?") == ACTION_CURRENT_INFO
+
+    def test_latest_news_headlines_routes_web_research(self):
+        assert decide("What are the latest AI news headlines?") == ACTION_WEB_RESEARCH
+
+    # --- Existing time routing unchanged ---
+    def test_time_question_routes_time(self):
+        assert decide("What time is it?") == ACTION_TIME
+
+    def test_date_question_routes_time(self):
+        assert decide("What is today's date?") == ACTION_TIME
+
+    # --- Existing chat routing unchanged ---
+    def test_greeting_stays_chat(self):
+        assert decide("hi") == ACTION_CHAT
+
+    def test_hello_stays_chat(self):
+        assert decide("hello") == ACTION_CHAT
+
+    def test_how_are_you_stays_chat(self):
+        assert decide("How are you?") == ACTION_CHAT
+
+    def test_joke_routes_creative(self):
+        assert decide("Tell me a joke") == ACTION_CREATIVE
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

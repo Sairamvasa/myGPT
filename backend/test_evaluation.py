@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from agents.agent import Agent
 from agents.planner import decide
-from llm import ask_llm, OLLAMA_MODEL, _generation_options
+from llm import ask_llm, OLLAMA_MODEL, NVIDIA_TEMPERATURE
 from rag import process_text_file, search_pdf
 
 
@@ -131,7 +131,7 @@ class EvaluationSuite:
         print("MyGPT COMPREHENSIVE AI EVALUATION")
         print("=" * 70)
         print(f"Model: {OLLAMA_MODEL}")
-        print(f"Temperature: {_generation_options().get('temperature')}")
+        print(f"Temperature: {NVIDIA_TEMPERATURE}")
         print()
         
         # ========== 1. GENERAL KNOWLEDGE ==========
@@ -507,11 +507,11 @@ def main():
     hallucinations = sum(1 for r in results if r.hallucination)
     if hallucinations > 0:
         print(f"\nWARNING: {hallucinations} hallucination(s) detected!")
-        sys.exit(1)
+        return 1
     else:
         print("\nNo hallucinations detected")
-        sys.exit(0)
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -29,6 +29,43 @@ type ChatMessage = {
     regenerate?: boolean;
 };
 
+function parseStreamChunk(
+  textChunk: string,
+  existingBuffer: string
+): { content: string; remainingBuffer: string } {
+  const combined = existingBuffer + textChunk;
+  if (!combined.includes("data:")) {
+    return { content: combined, remainingBuffer: "" };
+  }
+
+  const lines = combined.split("\n");
+  const completeLines = combined.endsWith("\n") ? lines : lines.slice(0, -1);
+  const remainingBuffer = combined.endsWith("\n") ? "" : lines[lines.length - 1];
+
+  let extracted = "";
+  for (const line of completeLines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed === "data: [DONE]") continue;
+    if (trimmed.startsWith("data:")) {
+      const dataContent = trimmed.slice(5).trim();
+      if (dataContent.startsWith("{") && dataContent.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(dataContent);
+          extracted += parsed.content ?? parsed.text ?? parsed.delta ?? parsed.response ?? "";
+          continue;
+        } catch {
+          // Fall through to plain text
+        }
+      }
+      extracted += dataContent;
+    } else {
+      extracted += line + "\n";
+    }
+  }
+
+  return { content: extracted, remainingBuffer };
+}
+
 type Props = {
   setMessages: React.Dispatch<
     React.SetStateAction<ChatMessage[]>
@@ -555,81 +592,85 @@ export default function ChatInput({
         // User uploaded PDFs and asked
         // a question at the same time
         if (submittedText) {
+          const assistantMessageId = crypto.randomUUID();
+          activeAssistantMessageIdRef.current = assistantMessageId;
+
+          setMessages((previous) => [
+            ...previous,
+            { id: assistantMessageId, role: "assistant", content: "", isStreaming: true },
+          ]);
+
           const stream = await streamAI(
             submittedText,
             targetChatId,
             abortController.signal
           );
 
-if (!stream) {
-    throw new Error("No stream received.");
-}
+          if (!stream) {
+            throw new Error("No stream received.");
+          }
 
-const reader = stream.getReader();
+          const reader = stream.getReader();
+          const decoder = new TextDecoder("utf-8");
 
-const decoder = new TextDecoder();
+          let answer = "";
+          let sseBuffer = "";
+          let firstChunkLogged = false;
 
-let answer = "";
-let assistantMessageId: string | null = null;
-let firstChunkLogged = false;
+          while (true) {
+            if (abortController.signal.aborted) {
+              await reader.cancel();
+              break;
+            }
 
-while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-    if (abortController.signal.aborted) {
+            if (!isActiveRequest()) break;
+            const textChunk = decoder.decode(value, { stream: true });
+            if (!textChunk) continue;
 
-        reader.cancel();
+            const parsed = parseStreamChunk(textChunk, sseBuffer);
+            sseBuffer = parsed.remainingBuffer;
+            const content = parsed.content;
 
-        break;
-    }
+            if (content) {
+              answer += content;
+              setMessages((previous) =>
+                previous.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, content: answer, isStreaming: true }
+                    : message
+                )
+              );
+            }
 
-    const { done, value } = await reader.read();
+            if (!firstChunkLogged) {
+              firstChunkLogged = true;
+              console.info("FIRST_CHUNK", { requestId, chunkLength: value?.length ?? 0 });
+            }
+          }
 
-    if (done) break;
+          const trailingText = decoder.decode();
+          if (trailingText) {
+            const parsedTrailing = parseStreamChunk(trailingText, sseBuffer);
+            answer += parsedTrailing.content;
+          }
 
-    if (!isActiveRequest()) break;
-    answer += decoder.decode(value, { stream: true });
-    if (!answer) continue;
+          if (isActiveRequest()) {
+            setMessages((previous) => {
+              const finalAnswer = answer.trim()
+                ? answer
+                : "⚠️ No answer was received. Please try again.";
 
-    setMessages((previous) => {
-        if (!assistantMessageId) {
-            assistantMessageId = crypto.randomUUID();
-            activeAssistantMessageIdRef.current = assistantMessageId;
-            return [
-              ...previous,
-              { id: assistantMessageId, role: "assistant", content: answer, isStreaming: true },
-            ];
-        }
-        return previous.map((message) =>
-          message.id === assistantMessageId
-            ? { ...message, content: answer, isStreaming: true }
-            : message
-        );
-    });
-    if (!firstChunkLogged) {
-      firstChunkLogged = true;
-      console.info("FIRST_CHUNK", { requestId, chunkLength: value?.length ?? 0 });
-    }
-
-}
-const trailingText = decoder.decode();
-if (trailingText) {
-    answer += trailingText;
-}
-if (isActiveRequest()) setMessages((previous) => {
-    const finalAnswer = answer.trim()
-        ? answer
-        : "⚠️ No answer was received. Please try again.";
-
-    if (!assistantMessageId) {
-        return [...previous, { id: crypto.randomUUID(), role: "assistant", content: finalAnswer, isStreaming: false }];
-    }
-    return previous.map((message) =>
-      message.id === assistantMessageId
-        ? { ...message, content: finalAnswer, isStreaming: false }
-        : message
-    );
-});
-console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
+              return previous.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: finalAnswer, isStreaming: false }
+                  : message
+              );
+            });
+          }
+          console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
         } else {
           let message =
             `📚 ${successfulCount} of ${totalCount} document file(s) processed successfully.`;
@@ -677,21 +718,21 @@ console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
           );
 
           const result = await analyzeImage(
-    imageFile,
-    question
-);
+            imageFile,
+            question
+          );
 
-console.log(result);
+          console.log(result);
 
-setMessages((previous) => [
-    ...previous,
-    {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content:
-            `🖼️ ${imageFile.name}\n\n${result.answer}`,
-    },
-]);
+          setMessages((previous) => [
+            ...previous,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content:
+                `🖼️ ${imageFile.name}\n\n${result.answer}`,
+            },
+          ]);
         }
       }
 
@@ -703,79 +744,86 @@ setMessages((previous) => [
         filesToProcess.length === 0 &&
         userText
       ) {
+        const assistantMessageId = crypto.randomUUID();
+        activeAssistantMessageIdRef.current = assistantMessageId;
+
+        setMessages((previous) => [
+          ...previous,
+          { id: assistantMessageId, role: "assistant", content: "", isStreaming: true, regenerate: true },
+        ]);
+
         const stream = await streamAI(
           submittedText,
           targetChatId,
           abortController.signal
         );
 
-if (!stream) {
-    throw new Error("No stream received.");
-}
-
-const reader = stream.getReader();
-const decoder = new TextDecoder();
-
-let answer = "";
-let assistantMessageId: string | null = null;
-let firstChunkLogged = false;
-
-while (true) {
-
-    if (abortController.signal.aborted) {
-        await reader.cancel();
-        break;
-    }
-
-    const { done, value } = await reader.read();
-
-    if (done) break;
-
-    if (!isActiveRequest()) break;
-    answer += decoder.decode(value, { stream: true });
-    if (!answer) continue;
-
-    setMessages((previous) => {
-        if (!assistantMessageId) {
-          assistantMessageId = crypto.randomUUID();
-          activeAssistantMessageIdRef.current = assistantMessageId;
-          return [
-            ...previous,
-            { id: assistantMessageId, role: "assistant", content: answer, isStreaming: true, regenerate: true },
-          ];
+        if (!stream) {
+          throw new Error("No stream received.");
         }
-        return previous.map((message) =>
-          message.id === assistantMessageId
-            ? { ...message, content: answer, isStreaming: true }
-            : message
-        );
-    });
-    if (!firstChunkLogged) {
-      firstChunkLogged = true;
-      console.info("FIRST_CHUNK", { requestId, chunkLength: value?.length ?? 0 });
-    }
-}
-const trailingText = decoder.decode();
-if (trailingText) {
-    answer += trailingText;
-}
 
-// Remove cursor after completion
-if (isActiveRequest()) setMessages((previous) => {
-    const finalAnswer = answer.trim()
-      ? answer
-      : "⚠️ No answer was received. Please try again.";
+        const reader = stream.getReader();
+        const decoder = new TextDecoder("utf-8");
 
-    if (!assistantMessageId) {
-      return [...previous, { id: crypto.randomUUID(), role: "assistant", content: finalAnswer, isStreaming: false }];
-    }
-    return previous.map((message) =>
-      message.id === assistantMessageId
-        ? { ...message, content: finalAnswer, isStreaming: false }
-        : message
-    );
-});
-console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
+        let answer = "";
+        let sseBuffer = "";
+        let firstChunkLogged = false;
+
+        while (true) {
+          if (abortController.signal.aborted) {
+            await reader.cancel();
+            break;
+          }
+
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          if (!isActiveRequest()) break;
+          const textChunk = decoder.decode(value, { stream: true });
+          if (!textChunk) continue;
+
+          const parsed = parseStreamChunk(textChunk, sseBuffer);
+          sseBuffer = parsed.remainingBuffer;
+          const content = parsed.content;
+
+          if (content) {
+            answer += content;
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: answer, isStreaming: true }
+                  : message
+              )
+            );
+          }
+
+          if (!firstChunkLogged) {
+            firstChunkLogged = true;
+            console.info("FIRST_CHUNK", { requestId, chunkLength: value?.length ?? 0 });
+          }
+        }
+
+        const trailingText = decoder.decode();
+        if (trailingText) {
+          const parsedTrailing = parseStreamChunk(trailingText, sseBuffer);
+          answer += parsedTrailing.content;
+        }
+
+        // Remove cursor after completion
+        if (isActiveRequest()) {
+          setMessages((previous) => {
+            const finalAnswer = answer.trim()
+              ? answer
+              : "⚠️ No answer was received. Please try again.";
+
+            return previous.map((message) =>
+              message.id === assistantMessageId
+                ? { ...message, content: finalAnswer, isStreaming: false }
+                : message
+            );
+          });
+        }
+        console.info("REQUEST_FINISHED", { requestId, answerLength: answer.length });
       }
 
       // Reconcile the committed exchange after streaming. This closes the

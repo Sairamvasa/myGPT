@@ -241,108 +241,151 @@ def web_search(query: str, max_results: int = 5):
     }
 
 
-_BLOCKED_NAMES = {
-    "__import__",
-    "breakpoint",
-    "compile",
-    "eval",
-    "exec",
-    "getattr",
-    "globals",
-    "input",
-    "locals",
-    "open",
-    "setattr",
-    "vars",
-}
+
+# ---------------------------------------------------------------------------
+# Code execution security
+# ---------------------------------------------------------------------------
+
+# Modules that must never be importable in user code.
+_BLOCKED_IMPORTS: frozenset = frozenset({
+    "sys", "os", "subprocess", "threading", "multiprocessing",
+    "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
+    "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
+    "mmap", "platform", "sysconfig", "site", "importlib",
+    "pkgutil", "runpy", "zipimport", "pkg_resources",
+    "signal", "resource", "gc", "weakref",
+    "inspect", "dis", "ast", "codeop", "code", "types", "builtins",
+    "__main__", "__future__", "__builtin__",
+    "pathlib", "shutil", "requests",
+})
+
+# Built-in names/identifiers that must not appear in user code.
+_BLOCKED_NAMES: frozenset = frozenset({
+    "__import__", "breakpoint", "compile", "eval", "exec",
+    "getattr", "globals", "input", "locals", "open", "setattr", "vars",
+    "exit", "quit", "help", "license", "copyright", "credits",
+    # module names that must not be reachable as bare names either
+    "sys", "os", "subprocess", "threading", "multiprocessing",
+    "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
+    "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
+    "mmap", "platform", "sysconfig", "site", "importlib",
+    "pkgutil", "runpy", "zipimport", "pkg_resources",
+    "pathlib", "shutil", "requests",
+})
+
 MAX_CODE_CHARS = 12_000
 MAX_OUTPUT_CHARS = 64_000
 
 
 def _validate_python(code: str) -> List[str]:
-    """Validate Python code for safety violations."""
-    BLOCKED_IMPORTS = {
-        "sys", "os", "subprocess", "threading", "multiprocessing",
-        "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
-        "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
-        "mmap", "platform", "sysconfig", "site", "importlib",
-        "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-        "ctypes", "subprocess", "signal", "resource", "gc", "weakref",
-        "inspect", "dis", "ast", "codeop", "code", "types", "builtins",
-        "__main__", "__future__", "__builtin__", "builtins",
-    }
+    """
+    Authoritative Python safety validator (single definition — Bug 2 fix).
 
-    BLOCKED_NAMES = {
-        "__import__", "breakpoint", "compile", "eval", "exec", "getattr",
-        "globals", "input", "locals", "open", "setattr", "vars",
-        "exit", "quit", "help", "license", "copyright", "credits",
-        "sys", "os", "subprocess", "threading", "multiprocessing",
-        "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
-        "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
-        "mmap", "platform", "sysconfig", "site", "importlib",
-        "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-    }
+    Walks the AST and returns a list of human-readable error strings for
+    any blocked import, blocked name usage, dunder-attribute access, or
+    blocked built-in call.  Returns an empty list if the code is safe.
 
-    errors = []
+    Security rules enforced:
+      No imports from _BLOCKED_IMPORTS (filesystem, network, process ...)
+      No direct use of names in _BLOCKED_NAMES
+      No access to dunder (__xx__) attributes
+      No calls to dangerous built-ins (eval, exec, open, __import__ ...)
+    """
+    errors: List[str] = []
 
     try:
         tree = ast.parse(code, mode="exec")
-    except SyntaxError as e:
-        return [f"Syntax error: {e}"]
+    except SyntaxError as exc:
+        return [f"Syntax error: {exc}"]
 
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
+        if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.split('.')[0] in {"sys", "os", "subprocess", "threading", "multiprocessing",
-        "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
-        "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
-        "mmap", "platform", "sysconfig", "site", "importlib",
-        "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-        "ctypes", "subprocess", "signal", "resource", "gc", "weakref",
-        "inspect", "dis", "ast", "codeop", "code", "types", "builtins",
-        "__main__", "__future__", "__builtin__", "builtins"}:
+                top = alias.name.split(".")[0]
+                if top in _BLOCKED_IMPORTS:
                     errors.append(f"Import of '{alias.name}' is not allowed")
 
-        if isinstance(node, ast.Name):
-            if node.id in {"__import__", "eval", "exec", "compile", "open", "input", "getattr", "setattr", "globals", "locals", "vars", "breakpoint", "exit", "quit", "help", "license", "copyright", "credits"}:
-                errors.append(f"Access to '{node.id}' is not allowed")
+        elif isinstance(node, ast.ImportFrom):
+            top = (node.module or "").split(".")[0]
+            if top in _BLOCKED_IMPORTS:
+                errors.append(f"Import from '{node.module}' is not allowed")
 
-        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
-            errors.append(f"Access to dunder attribute '{node.attr}' is not allowed")
+        elif isinstance(node, ast.Name):
+            if node.id in _BLOCKED_NAMES:
+                errors.append(f"Use of '{node.id}' is not allowed")
 
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in {"eval", "exec", "compile", "open", "input", "__import__", "getattr", "setattr", "globals", "locals", "vars"}:
-                errors.append(f"Calling '{node.func.id}' is not allowed")
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("__"):
+                errors.append(
+                    f"Access to dunder attribute '{node.attr}' is not allowed"
+                )
+
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id in _BLOCKED_NAMES:
+                    errors.append(f"Call to '{node.func.id}' is not allowed")
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in _BLOCKED_NAMES:
+                    errors.append(f"Call to '{node.func.attr}' is not allowed")
 
     return errors
+
+
+def _indent_code(code: str, indent: int) -> str:
+    """Indent every non-empty line by *indent* spaces."""
+    lines = code.splitlines()
+    indented = []
+    for line in lines:
+        if line.strip() == "":
+            indented.append("")
+        else:
+            indented.append(" " * indent + line)
+    return "\n".join(indented)
 
 
 def execute_python(code: str, timeout_seconds: int = 10) -> Dict[str, Any]:
     """
     Execute Python code in a sandboxed subprocess with safety controls.
 
-    Returns a dict with:
-    - success: bool
-    - stdout: str
-    - stderr: str
-    - exit_code: int
-    - timed_out: bool
-    - error: str (if any)
-    """
-    MAX_CODE_CHARS = 12_000
-    MAX_OUTPUT_CHARS = 64_000
+    Security design (Bug 4 fix)
+    ---------------------------
+    BEFORE this fix the wrapper injected 'import sys' and 'import io' at the
+    top of the executed script, making both names available to user code even
+    though the AST validator would have rejected 'import sys' in user code.
+    subprocess.run(capture_output=True) already captures stdout/stderr at the
+    OS level, so the in-process StringIO redirect was both unnecessary AND
+    a security hole.
 
+    After this fix:
+      1. The wrapper does NOT import sys or io -- those names are absent from
+         the executed script's namespace.
+      2. stdout/stderr are captured by subprocess.run(capture_output=True).
+      3. The wrapper only wraps user code in try/except so tracebacks appear
+         in stderr rather than being lost.
+      4. Subprocess runs with -I (isolated) mode and a stripped environment
+         (no PYTHONPATH, no API keys, no .env values).
+
+    Returns a dict with:
+      success   - bool
+      stdout    - str
+      stderr    - str
+      exit_code - int
+      timed_out - bool
+      error     - str | None
+    """
     if len(code) > MAX_CODE_CHARS:
         return {
             "success": False,
             "stdout": "",
-            "stderr": f"Code rejected for safety: maximum code size is {MAX_CODE_CHARS} characters.",
+            "stderr": (
+                f"Code rejected: maximum allowed size is {MAX_CODE_CHARS} characters."
+            ),
             "exit_code": -1,
             "timed_out": False,
             "error": f"Code exceeds maximum length of {MAX_CODE_CHARS} characters",
         }
 
-    # Validate code for safety
+    # Validate safety before executing anything.
     safety_errors = _validate_python(code)
     if safety_errors:
         return {
@@ -356,37 +399,26 @@ def execute_python(code: str, timeout_seconds: int = 10) -> Dict[str, Any]:
 
     timeout_seconds = min(max(int(timeout_seconds), 1), 30)
 
-    # Prepare the code for execution with stdout/stderr capture
-    wrapped_code = f"""
-import sys
-import io
+    # SECURITY: do NOT import sys or io here -- that would put them in scope
+    # for user code.  subprocess.run(capture_output=True) handles I/O capture
+    # at the OS level so no in-process redirect is needed.
+    wrapped_code = (
+        "try:\n"
+        + _indent_code(code, 4)
+        + "\nexcept Exception:\n"
+        + "    import traceback as _mygpt_tb\n"
+        + "    _mygpt_tb.print_exc()\n"
+        + "    raise SystemExit(1)\n"
+    )
 
-# Capture stdout/stderr
-_stdout = io.StringIO()
-_stderr = io.StringIO()
-_old_stdout = sys.stdout
-_old_stderr = sys.stderr
-sys.stdout = _stdout
-sys.stderr = _stderr
-
-try:
-{_indent_code(code, 8)}
-except Exception as e:
-    import traceback
-    traceback.print_exc()
-finally:
-    sys.stdout = _old_stdout
-    sys.stderr = _old_stderr
-    print(_stdout.getvalue(), end='', file=sys.__stdout__)
-    print(_stderr.getvalue(), end='', file=sys.__stderr__)
-"""
-
-    # Use a temporary file for execution
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(wrapped_code)
-        temp_file = f.name
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as fh:
+        fh.write(wrapped_code)
+        temp_file = fh.name
 
     try:
+        # Stripped environment: no PYTHONPATH, no API keys, no secrets.
         env = {
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -406,7 +438,6 @@ finally:
         stderr = proc.stderr
         exit_code = proc.returncode
 
-        MAX_OUTPUT_CHARS = 64_000
         if len(stdout) > MAX_OUTPUT_CHARS:
             stdout = stdout[:MAX_OUTPUT_CHARS] + "\n[output truncated]"
         if len(stderr) > MAX_OUTPUT_CHARS:
@@ -430,14 +461,14 @@ finally:
             "timed_out": True,
             "error": f"Execution timed out after {timeout_seconds} seconds",
         }
-    except Exception as e:
+    except Exception as exc:
         return {
             "success": False,
             "stdout": "",
-            "stderr": str(e),
+            "stderr": str(exc),
             "exit_code": -1,
             "timed_out": False,
-            "error": str(e),
+            "error": str(exc),
         }
     finally:
         try:
@@ -445,75 +476,6 @@ finally:
         except OSError:
             pass
 
-
-def _indent_code(code: str, indent: int) -> str:
-    """Indent each line of code by the specified amount."""
-    lines = code.splitlines()
-    indented = []
-    for line in lines:
-        if line.strip() == "":
-            indented.append("")
-        else:
-            indented.append(" " * indent + line)
-    return "\n".join(indented)
-
-
-def _validate_python(code: str) -> List[str]:
-    """Validate Python code for safety violations."""
-    BLOCKED_IMPORTS = {
-        "sys", "os", "subprocess", "threading", "multiprocessing",
-        "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
-        "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
-        "mmap", "platform", "sysconfig", "site", "importlib",
-        "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-        "ctypes", "subprocess", "signal", "resource", "gc", "weakref",
-        "inspect", "dis", "ast", "codeop", "code", "types", "builtins",
-        "__main__", "__future__", "__builtin__", "builtins",
-    }
-
-    BLOCKED_NAMES = {
-        "__import__", "breakpoint", "compile", "eval", "exec", "getattr",
-        "globals", "input", "locals", "open", "setattr", "vars",
-        "exit", "quit", "help", "license", "copyright", "credits",
-        "sys", "os", "subprocess", "threading", "multiprocessing",
-        "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
-        "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
-        "mmap", "platform", "sysconfig", "site", "importlib",
-        "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-    }
-
-    errors = []
-
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError as e:
-        return [f"Syntax error: {e}"]
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                if alias.name.split('.')[0] in {"sys", "os", "subprocess", "threading", "multiprocessing",
-        "socket", "ssl", "http", "urllib", "ftplib", "smtplib",
-        "pickle", "marshal", "shelve", "dbm", "sqlite3", "ctypes",
-        "mmap", "platform", "sysconfig", "site", "importlib",
-        "pkgutil", "runpy", "zipimport", "pkg_resources", "importlib",
-        "ctypes", "subprocess", "signal", "resource", "gc", "weakref",
-        "inspect", "dis", "ast", "codeop", "code", "types", "builtins",
-        "__main__", "__future__", "__builtin__", "builtins"}:
-                    errors.append(f"Import of '{alias.name}' is not allowed")
-
-        if isinstance(node, ast.Name):
-            if node.id in {"__import__", "eval", "exec", "compile", "open", "input", "getattr", "setattr", "globals", "locals", "vars", "breakpoint", "exit", "quit", "help", "license", "copyright", "credits"}:
-                errors.append(f"Access to '{node.id}' is not allowed")
-
-        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
-            errors.append(f"Access to dunder attribute '{node.attr}' is not allowed")
-
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in {"eval", "exec", "compile", "open", "input", "__import__", "getattr", "setattr", "globals", "locals", "vars"}:
-                errors.append(f"Calling '{node.func.id}' is not allowed")
-
-    return errors
 
 
 def get_current_time() -> str:

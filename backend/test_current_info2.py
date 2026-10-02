@@ -1,21 +1,28 @@
+"""Test current-info query + direct LLM call (standalone integration script)."""
 import sys
-import io
+import os
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.path.insert(0, os.path.dirname(__file__))
 
 from agents.agent import Agent
-from llm import ask_gemini
+from llm import ask_llm_routed
 from perf_telemetry import create_context
 
-agent = Agent()
-result = agent.run("Today's petrol price in Hyderabad", chat_id=1, user_id=1)
-print("Action:", result.get("action"))
-print("Tool results:", result.get("tool_results", "")[:500])
 
-# Test ask_gemini directly
-perf = create_context("test", "gemini-1.5-flash")
-try:
-    answer = ask_gemini(result["prompt"], perf_context=perf, action="current_info")
-    print("Gemini answer:", answer)
-except Exception as e:
-    print("Gemini Error:", type(e).__name__, str(e))
+def main():
+    agent = Agent()
+    result = agent.run("Today's petrol price in Hyderabad", chat_id=1, user_id=1)
+    print("Action:", result.get("action"))
+    print("Tool results:", result.get("tool_results", "")[:500])
+
+    # Test ask_llm_routed directly
+    perf = create_context("test", "gemini-1.5-flash")
+    try:
+        answer = ask_llm_routed(result["prompt"], "current_info", perf_context=perf)
+        print("Answer:", answer)
+    except Exception as e:
+        print("Error:", type(e).__name__, str(e))
+
+
+if __name__ == "__main__":
+    main()

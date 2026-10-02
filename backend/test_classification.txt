@@ -1,0 +1,55 @@
+filename | tests? | guard? | module-level exec summary | class
+---|---|---|---|---
+test_apple_checker.py | Yes (test_apple_checker) | Yes | sys.path.insert (benign) | A
+test_bug2_bug4.py | No | No | sys.path.insert, execute_python() [subprocess] at module level | C
+test_all_queries.py | No | No | requests.post() [network] at module level, sys.stdout reassign | C
+test_agent_context.py | Yes (5 test funcs) | Yes | sys.path.insert (benign) | A
+test_agent_capabilities.py | No (run_tests) | Yes | import only; Agent/run inside run_tests() | B
+test_current_info_regression.py | Yes (6 test funcs) | No | sys.path.insert (benign) | A
+test_current_info4.py | No | No | load_dotenv(), Agent(), agent.run(), ask_llm_routed(), create_context module-level | C
+test_current_info3.py | No | No | load_dotenv(), Agent(), agent.run(), ask_gemini() module-level | C
+test_current_info2.py | No | No | Agent(), agent.run(), ask_gemini() module-level | C
+test_current_info.py | No | No | Agent(), agent.run(), ask_llm_routed() module-level | C
+test_code_gen2.py | No | No | load_dotenv(), Agent(), agent.run(), ask_llm_routed(), create_context module-level | C
+test_code_gen.py | No | No | load_dotenv(), Agent(), agent.run(), ask_llm_routed(), create_context module-level | C
+test_code_execution_live.py | No | No | requests.post() [network] at module level | C
+test_followups.py | No | No | load_dotenv(), Agent(), agent.run(), ask_llm_routed(), create_context module-level | C
+test_code_execution.py | Yes (TestCodeExecutionRouting) | Yes | sys.path.insert (benign) | A
+test_chat_routing.py | Yes (3 test funcs) | Yes | sys.path.insert (benign) | A
+test_first_request_lifecycle.py | Yes (4 test funcs) | No | sys.path.insert (benign) | A
+test_calculator.py | No | No | print(add()), print(multiply()) at module level (pure funcs) | D
+test_fast_pipeline.py | Yes (4 test funcs) | No | sys.path.insert (benign) | A
+test_executor_security.py | No | No | sys.path.insert, execute_python() [subprocess] module-level | C
+test_evaluation.py | No (EvaluationSuite + main) | Yes | import only; Agent in __init__; sys.exit in guard | B
+test_live_current_info.py | No (run_tests) | Yes | imports only; requests inside run_tests() | B
+test_direct.py | No | No | load_dotenv(), analyze_image() [vision/model] module-level | C
+test_auth_flow.py | Yes (3 test funcs) | No | sys.path.insert (benign) | A
+test_history_persistence.py | Yes (1 test func) | No | sys.path.insert (benign) | A
+test_gemini.py | No | No | load_dotenv(), _get_client() [model loading] module-level | C
+test_memory_fix.py | No | No | Agent() instantiation, agent.run(), DB calls module-level | C
+test_model.py | No | No | load_dotenv(), _get_client() [model loading] module-level | C
+test_response_quality.py | No | No | Agent(), agent.run(), process_text_file() [RAG], ask_llm() module-level | C
+test_rag_threshold.py | No (run_tests) | Yes | import only; RAG/process_text_file inside run_tests() | B
+test_rag_history.py | No | No | Agent(), agent.run(), process_text_file() [RAG] module-level | C
+test_rag_e2e.py | Yes (3 test funcs) | Yes | sys.path.insert (benign) | A
+test_rag_code.py | Yes (6 test funcs) | Yes | sys.path.insert (benign); CALCULATOR_PY=data | A
+test_rag_accuracy.py | No | No | process_text_file() [RAG], _get_client() [model], Agent(), agent.run(), ask_ollama() module-level | C
+test_provider_routing.py | Yes (13 test funcs) | No | import only; asyncio.run inside test fn | A
+test_privacy.py | No | No | TestClient(app) instantiation, client.post/get [network], save_memory [DB] module-level | C
+test_phase5.py | No (run_tests) | Yes | import only; web_search/web_search calls inside run_tests() | B
+test_perf_telemetry.py | No | No | create_context(), ask_llm() [LLM], stream_llm() [LLM], reload() module-level | C
+test_ollama.py | No | No | load_dotenv(), ask_llm_with_image() [model] module-level | C
+test_phase82_security.py | No (3 run_* funcs) | Yes | import only; execute_python() inside functions | B
+test_phase83_reliability.py | No (3 run_* funcs) | Yes | import only; execution in functions | B
+test_user_facing.py | No | No | process_text_file() [RAG], _get_client() [model], Agent(), agent.run(), ask_ollama() module-level | C
+test_stream_java.py | No | No | requests.post() [network] at module level | C
+test_single_query.py | No | No | requests.post() [network] at module level | C
+test_security.py | No (run_tests) | Yes | import only; subprocess/llm calls inside run_tests() | B
+test_web.py | No (run_tests) | Yes | import only; web_search() inside run_tests() | B
+test_vision.py | No | No | analyze_image() [vision/model] module-level | C
+test_web_research.py | No | No | requests.post() [network] at module level | C
+test_word_problem.py | No (run_tests) | Yes | import only; Agent() inside run_tests() | B
+test_num_predict.py | No (run_tests) | Yes | import only; execution inside run_tests() | B
+tests/test_regression.py | Yes (7 test funcs) | No | os.environ set (benign); import only module-level | A
+
+Summary: A=13, B=11, C=26, D=1, Total=51

@@ -6,7 +6,7 @@ import bcrypt
 import re
 import hashlib
 import uuid
-from decimal import Decimal, InvalidOperation
+
 from contextlib import asynccontextmanager
 from PIL import Image
 
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from jose import jwt
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from vision import analyze_image
-from gemini import generate_image
+
 from database import *
 from models import *
 from agents.agent import Agent
@@ -103,113 +103,10 @@ class LoginRequest(BaseModel):
 agent = Agent()
 
 
-_CURRENT_INFO_VALUE_RE = re.compile(
-    r"(?P<prefix>\u20b9|rs\.?|inr|\$|usd|eur|gbp|\u20ac|\u00a3)?\s*"
-    r"(?P<number>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<suffix>%|(?:/|per\s+)?(?:litre|liter|gallon|kg|gram|ounce|oz|barrel|unit|share|coin|btc|eth|bitcoin|rupees?|dollars?|celsius|fahrenheit|degrees?))?",
-    re.IGNORECASE,
-)
-
-
-def _normalize_grounding_number(value: str) -> str | None:
-    try:
-        number = Decimal(value.replace(",", ""))
-    except (InvalidOperation, ValueError):
-        return None
-    return format(number.normalize(), "f")
-
-
-def _extract_current_info_values(text: str | None) -> set[str]:
-    if not text:
-        return set()
-
-    values: set[str] = set()
-    for match in _CURRENT_INFO_VALUE_RE.finditer(text):
-        if not (match.group("prefix") or match.group("suffix")):
-            continue
-        normalized = _normalize_grounding_number(match.group("number"))
-        if normalized is not None:
-            values.add(normalized)
-    return values
-
-
-def _fallback_current_info_answer(tool_results: str | None) -> str:
-    if not tool_results or "returned no results" in tool_results.lower():
-        return "I couldn't verify the current information."
-
-    value_lines = [
-        line.strip().strip("*")
-        for line in tool_results.splitlines()
-        if any(
-            match.group("prefix") or match.group("suffix")
-            for match in _CURRENT_INFO_VALUE_RE.finditer(line)
-        )
-    ]
-    source_match = re.search(r"Source:\s*(\S+)", tool_results)
-    source = source_match.group(1) if source_match else None
-
-    if value_lines:
-        answer = f"Based on the retrieved search result: {value_lines[0]}"
-        if source:
-            answer += f" [Source: {source}]"
-        return answer
-
-    return "I couldn't verify the current information."
-
-
-def _enforce_current_info_grounding(answer: str, tool_results: str | None) -> str:
-    if (
-        not tool_results
-        or "could not be verified" in tool_results.lower()
-        or "no results" in tool_results.lower()
-    ):
-        return "I couldn't verify the current information from a live search."
-
-    stripped_answer = answer.strip()
-    if not stripped_answer or stripped_answer.endswith((":", "-", "—", "...")):
-        return _fallback_current_info_answer(tool_results)
-
-    answer_values = _extract_current_info_values(answer)
-    source_values = _extract_current_info_values(tool_results)
-    if not answer_values:
-        if not source_values:
-            return answer
-        # A current-info answer without a verifiable value must not make an
-        # unsupported freshness claim.
-        freshness_claim = re.search(
-            r"\b(?:today|current|latest|now|live|as of)\b",
-            answer,
-            re.IGNORECASE,
-        )
-        return (
-            "I couldn't verify the current information from the retrieved "
-            "search results."
-            if freshness_claim
-            else answer
-        )
-
-    if answer_values.issubset(source_values):
-        # Do not accept a date/source claim that is absent from retrieval.
-        claimed_dates = set(
-            re.findall(
-                r"\b(?:January|February|March|April|May|June|July|August|"
-                r"September|October|November|December)\s+\d{1,2},\s+\d{4}\b",
-                answer,
-                re.IGNORECASE,
-            )
-        )
-        if claimed_dates and not claimed_dates.issubset(
-            set(re.findall(
-                r"\b(?:January|February|March|April|May|June|July|August|"
-                r"September|October|November|December)\s+\d{1,2},\s+\d{4}\b",
-                tool_results,
-                re.IGNORECASE,
-            ))
-        ):
-            return "I couldn't verify the date associated with the current information."
-        return answer
-
-    return _fallback_current_info_answer(tool_results)
+# Grounding helpers live in agents.grounding to allow voice_agent to import
+# them without creating a circular dependency (app.py → voice_agent.routes →
+# voice_agent.agent → app.py would be circular).
+from agents.grounding import _enforce_current_info_grounding  # noqa: E402
 
 
 @asynccontextmanager
@@ -513,6 +410,7 @@ def new_chat(user_id: int = Depends(get_current_user)):
 def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = chat_rate_limit):
 
     verify_chat_ownership(data.chat_id, user_id)
+    project_id = get_conversation_project_id(data.chat_id)
     trace_id = getattr(request.state, "trace_id", None)
     provider_name, provider_model = get_routed_provider_metadata()
     _log_chat_phase(
@@ -535,7 +433,8 @@ def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current
     result = agent.run(
         data.message,
         data.chat_id,
-        user_id
+        user_id,
+        project_id=project_id,
     )
     _log_chat_phase(
         trace_id,
@@ -873,7 +772,7 @@ def vision(
             detail={
                 "error": True,
                 "code": e.kind,
-                "message": "Image analysis failed.",
+                "message": e.user_message,
                 "retry_after_seconds": e.retry_after,
             },
         )
@@ -924,6 +823,7 @@ def generate_image(
 def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = stream_rate_limit):
 
     verify_chat_ownership(data.chat_id, user_id)
+    project_id = get_conversation_project_id(data.chat_id)
     trace_id = getattr(request.state, "trace_id", None)
     provider_name, provider_model = get_routed_provider_metadata()
     _log_chat_phase(
@@ -951,7 +851,8 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
     result = agent.run(
         data.message,
         data.chat_id,
-        user_id
+        user_id,
+        project_id=project_id,
     )
     _log_chat_phase(
         trace_id,
@@ -985,7 +886,12 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
 
         return StreamingResponse(
             direct_response(),
-            media_type="text/plain"
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
 
     # Final prompt created by Agent
@@ -1112,7 +1018,12 @@ def stream(request: Request, data: ChatRequest, user_id: int = Depends(get_curre
 
     return StreamingResponse(
         generate(),
-        media_type="text/plain"
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 @app.get("/memories")
@@ -1122,6 +1033,271 @@ def memories(user_id: int = Depends(get_current_user)):
 
     return {
         "memories": get_all_memories(user_id)
+}
+
+
+# ==============================
+# PROJECTS API
+# ==============================
+
+PROJECT_TEXT_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".html", ".htm", ".css", ".scss", ".sass",
+    ".json", ".jsonc", ".csv", ".tsv",
+    ".md", ".markdown", ".txt", ".text",
+    ".xml", ".yaml", ".yml", ".toml", ".ini",
+    ".sh", ".bash", ".bat", ".ps1",
+    ".c", ".cpp", ".h", ".java", ".go",
+    ".rs", ".rb", ".php", ".swift", ".kt",
+    ".sql", ".env", ".gitignore", ".dockerfile",
+    ".r", ".scala", ".lua",
+}
+
+project_rate_limit = Depends(user_rate_limit("projects"))
+project_file_rate_limit = Depends(user_rate_limit("project_files"))
+
+
+def _verify_project_access(project_id: int, user_id: int):
+    """Verify the user owns the project; raises HTTPException on failure."""
+    owner = get_project_owner(project_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if owner != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+    return project_id
+
+
+class ProjectRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2_000)
+
+
+@app.post("/projects")
+def create_project_endpoint(
+    data: ProjectRequest,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """Create a new project."""
+    project_id = create_project(user_id, data.title, data.description)
+    return {
+        "project_id": project_id,
+        "title": data.title,
+        "description": data.description,
+        "user_id": user_id,
+    }
+
+
+@app.get("/projects")
+def list_projects(
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """List all projects owned by the authenticated user."""
+    return get_projects(user_id)
+
+
+@app.get("/projects/{project_id}")
+def get_project_endpoint(
+    project_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """Retrieve a single project (ownership verified)."""
+    _verify_project_access(project_id, user_id)
+    project = get_project(project_id, user_id)
+    return project
+
+
+@app.put("/projects/{project_id}")
+def update_project_endpoint(
+    project_id: int,
+    data: ProjectRequest,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """Update a project's title/description."""
+    _verify_project_access(project_id, user_id)
+    success = update_project(project_id, user_id, data.title, data.description)
+    if not success:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"message": "Project updated successfully"}
+
+
+@app.delete("/projects/{project_id}")
+def delete_project_endpoint(
+    project_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """Delete a project and all associated conversations and files."""
+    _verify_project_access(project_id, user_id)
+    delete_project(project_id, user_id)
+    return {"message": "Project and all its data deleted successfully"}
+
+
+@app.post("/projects/{project_id}/conversations")
+def create_project_conversation_endpoint(
+    project_id: int,
+    data: ProjectRequest,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """Create a conversation inside a project."""
+    _verify_project_access(project_id, user_id)
+    chat_id = create_project_conversation(project_id, user_id, data.title)
+    project = get_project(project_id, user_id)
+    return {
+        "chat_id": chat_id,
+        "project_id": project_id,
+        "title": data.title,
+        "project_title": project["title"] if project else None,
+    }
+
+
+@app.get("/projects/{project_id}/conversations")
+def list_project_conversations(
+    project_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """List all conversations in a project."""
+    _verify_project_access(project_id, user_id)
+    return get_project_conversations(project_id, user_id)
+
+
+@app.post("/projects/{project_id}/upload")
+async def upload_project_file(
+    project_id: int,
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_file_rate_limit,
+):
+    """Upload a file to a project."""
+    _verify_project_access(project_id, user_id)
+
+    filename = safe_filename(file.filename)
+    extension = os.path.splitext(filename)[1].lower()
+
+    if extension != ".pdf" and extension not in PROJECT_TEXT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {extension}",
+        )
+
+    process_pdf, process_text_file = _load_rag_processors()
+
+    project_dir = os.path.join("uploads", f"projects", str(project_id), str(user_id))
+    os.makedirs(project_dir, exist_ok=True)
+
+    file_path = os.path.join(project_dir, filename)
+    total_bytes = save_upload_file(file, file_path, max_bytes=MAX_UPLOAD_BYTES, base_dir=project_dir)
+
+    if extension == ".pdf":
+        chunks = process_pdf(file_path, user_id, source_filename=filename, project_id=project_id)
+        file_type = "pdf"
+    else:
+        chunks = process_text_file(file_path, user_id, source_filename=filename, project_id=project_id)
+        file_type = extension.lstrip(".") or "text"
+
+    file_id = save_project_file(
+        project_id, user_id, filename, file_path, file_type, total_bytes
+    )
+
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "file_type": file_type,
+        "file_size": total_bytes,
+        "chunks": chunks,
+    }
+
+
+@app.get("/projects/{project_id}/files")
+def list_project_files(
+    project_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_file_rate_limit,
+):
+    """List all files in a project."""
+    _verify_project_access(project_id, user_id)
+    return get_project_files(project_id, user_id)
+
+
+@app.get("/projects/{project_id}/files/{file_id}")
+def get_project_file_endpoint(
+    project_id: int,
+    file_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_file_rate_limit,
+):
+    """Download a project file."""
+    _verify_project_access(project_id, user_id)
+    file_record = get_project_file(file_id, user_id)
+    if file_record is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="File not found in this project")
+
+    file_path = file_record["file_path"]
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return FileResponse(
+        file_path,
+        filename=file_record["filename"],
+    )
+
+
+@app.delete("/projects/{project_id}/files/{file_id}")
+def delete_project_file_endpoint(
+    project_id: int,
+    file_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_file_rate_limit,
+):
+    """Delete a project file."""
+    _verify_project_access(project_id, user_id)
+    file_record = get_project_file(file_id, user_id)
+    if file_record is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="File not found in this project")
+
+    try:
+        os.remove(file_record["file_path"])
+    except OSError:
+        pass
+
+    delete_project_file(file_id, user_id)
+    return {"message": "File deleted successfully"}
+
+
+@app.get("/projects/{project_id}/context")
+def project_context(
+    project_id: int,
+    user_id: int = Depends(get_current_user),
+    _rl: None = project_rate_limit,
+):
+    """Return project metadata + file listing for context."""
+    _verify_project_access(project_id, user_id)
+    project = get_project(project_id, user_id)
+    files = get_project_files(project_id, user_id)
+    conversations = get_project_conversations(project_id, user_id)
+
+    return {
+        "project": project,
+        "files": [
+            {
+                "id": f["id"],
+                "filename": f["filename"],
+                "file_type": f["file_type"],
+                "file_size": f["file_size"],
+                "created_at": f["created_at"],
+            }
+            for f in files
+        ],
+        "conversations": conversations,
     }
 
 

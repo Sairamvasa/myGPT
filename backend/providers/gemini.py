@@ -29,6 +29,7 @@ class GeminiProvider(LLMProvider):
                     status_code=401,
                 )
             from google import genai
+            from google.genai import types
             self._client = genai.Client(api_key=self.config.api_key)
         return self._client
 
@@ -73,9 +74,11 @@ class GeminiProvider(LLMProvider):
                 client = self._get_client()
                 self._log_safe(logging.INFO, "Gemini generate request", model=self.config.model)
                 try:
+                    from google.genai import types
                     from agents.prompts import SYSTEM_PROMPT
                     system_instruction = SYSTEM_PROMPT
                 except ImportError:
+                    from google.genai import types
                     system_instruction = "You are a helpful AI assistant."
 
                 response = client.models.generate_content(

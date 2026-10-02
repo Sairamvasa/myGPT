@@ -1,55 +1,61 @@
+"""Live code-execution smoke test against a running MyGPT backend.
+Standalone script — requires the backend running on http://localhost:8001.
+Run directly with ``python test_code_execution_live.py``.
+"""
 import requests
 import uuid
-import json
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-unique_id = uuid.uuid4().hex[:8]
-email = f"test_{unique_id}@example.com"
-password = "testpassword123"
 
-r = requests.post('http://localhost:8001/register', json={'name': 'Test User', 'email': email, 'password': password})
-print('Register:', r.status_code, r.json())
+def main():
+    unique_id = uuid.uuid4().hex[:8]
+    email = f"test_{unique_id}@example.com"
+    password = "testpassword123"
 
-r = requests.post('http://localhost:8001/login', json={'email': email, 'password': password})
-print('Login:', r.status_code, r.json())
-token = r.json()['access_token']
+    r = requests.post('http://localhost:8001/register', json={'name': 'Test User', 'email': email, 'password': password})
+    print('Register:', r.status_code, r.json())
 
-headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-r = requests.post('http://localhost:8001/new-chat', headers=headers)
-print('New chat:', r.status_code, r.json())
-chat_id = r.json()['chat_id']
+    r = requests.post('http://localhost:8001/login', json={'email': email, 'password': password})
+    print('Login:', r.status_code, r.json())
+    token = r.json()['access_token']
 
-# Test code execution
-print('\n=== Code Execution Tests ===')
+    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    r = requests.post('http://localhost:8001/new-chat', headers=headers)
+    print('New chat:', r.status_code, r.json())
+    chat_id = r.json()['chat_id']
 
-# Java GCD
-q = "Write a Java program to calculate GCD of two numbers 48 and 18"
-r = requests.post('http://localhost:8001/chat', headers=headers, json={'message': q, 'chat_id': chat_id}, timeout=120)
-print(f'Query: {q}')
-print(f'Status: {r.status_code}')
-if r.status_code == 200:
-    data = r.json()
-    print(f'Action: {data.get("action", "unknown")}')
-    print(f'Answer: {data.get("answer", "")[:800]}')
+    # Test code execution
+    print('\n=== Code Execution Tests ===')
 
-# Java Prime
-q = "Write a Java program to check if 17 is prime, then check if 20 is prime"
-r = requests.post('http://localhost:8001/chat', headers=headers, json={'message': q, 'chat_id': chat_id}, timeout=120)
-print(f'\nQuery: {q}')
-print(f'Status: {r.status_code}')
-if r.status_code == 200:
-    data = r.json()
-    print(f'Action: {data.get("action", "unknown")}')
-    print(f'Answer: {data.get("answer", "")[:800]}')
+    # Java GCD
+    q = "Write a Java program to calculate GCD of two numbers 48 and 18"
+    r = requests.post('http://localhost:8001/chat', headers=headers, json={'message': q, 'chat_id': chat_id}, timeout=120)
+    print(f'Query: {q}')
+    print(f'Status: {r.status_code}')
+    if r.status_code == 200:
+        data = r.json()
+        print(f'Action: {data.get("action", "unknown")}')
+        print(f'Answer: {data.get("answer", "")[:800]}')
 
-# Python sort
-q = "Write Python code to sort the list [5, 2, 8, 1]"
-r = requests.post('http://localhost:8001/chat', headers=headers, json={'message': q, 'chat_id': chat_id}, timeout=120)
-print(f'\nQuery: {q}')
-print(f'Status: {r.status_code}')
-if r.status_code == 200:
-    data = r.json()
-    print(f'Action: {data.get("action", "unknown")}')
-    print(f'Answer: {data.get("answer", "")[:800]}')
+    # Java Prime
+    q = "Write a Java program to check if 17 is prime, then check if 20 is prime"
+    r = requests.post('http://localhost:8001/chat', headers=headers, json={'message': q, 'chat_id': chat_id}, timeout=120)
+    print(f'\nQuery: {q}')
+    print(f'Status: {r.status_code}')
+    if r.status_code == 200:
+        data = r.json()
+        print(f'Action: {data.get("action", "unknown")}')
+        print(f'Answer: {data.get("answer", "")[:800]}')
+
+    # Python sort
+    q = "Write Python code to sort the list [5, 2, 8, 1]"
+    r = requests.post('http://localhost:8001/chat', headers=headers, json={'message': q, 'chat_id': chat_id}, timeout=120)
+    print(f'\nQuery: {q}')
+    print(f'Status: {r.status_code}')
+    if r.status_code == 200:
+        data = r.json()
+        print(f'Action: {data.get("action", "unknown")}')
+        print(f'Answer: {data.get("answer", "")[:800]}')
+
+
+if __name__ == "__main__":
+    main()
