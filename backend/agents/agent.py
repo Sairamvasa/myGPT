@@ -681,34 +681,115 @@ class Agent:
 
 
         elif action == ACTION_TIME:
+            print("[Agent Tool] Executing Current Time Tool...")
 
-            time_result = tool_registry.execute(
+            # --------------------------------------------
+            # 1. TOOL SELECTION
+            # --------------------------------------------
+            selected_tool = select_tool(action)
 
-                "get_current_time",
-
-                {},
-
-                tool_context,
-
-            )
-
-
-
-            observation = tool_result_to_observation(time_result)
-
-
-
-            if time_result.success:
-
-                current_clock = time_result.output or time_result.observation
-
-                tool_results = observation
-
-                direct_answer = current_clock
+            if selected_tool != "get_current_time":
+                tool_results = (
+                    "Tool selection mismatch: "
+                    "expected get_current_time."
+                )
 
             else:
+                tool_args = {}
 
-                tool_results = observation
+                # --------------------------------------------
+                # 2. TOOL VALIDATION
+                # --------------------------------------------
+                valid, validation_error = validate_tool_request(
+                    tool_registry,
+                    selected_tool,
+                    tool_args,
+                )
+
+                if not valid:
+                    tool_results = (
+                        f"Tool validation failed: "
+                        f"{validation_error}"
+                    )
+
+                else:
+                    # --------------------------------------------
+                    # 3. PERMISSION / RISK CHECK
+                    # --------------------------------------------
+                    permission = evaluate_tool_permission(
+                        tool_registry,
+                        selected_tool,
+                        user_confirmed=False,
+                    )
+
+                    if permission.decision == PermissionDecision.DENY:
+                        tool_results = (
+                            f"Tool permission denied: "
+                            f"{permission.reason}"
+                        )
+
+                    elif permission.decision == PermissionDecision.CONFIRM:
+                        tool_results = (
+                            f"Tool requires confirmation: "
+                            f"{permission.reason}"
+                        )
+
+                    else:
+                        # --------------------------------------------
+                        # 4. TOOL EXECUTION
+                        # --------------------------------------------
+                        time_result = tool_registry.execute(
+                            selected_tool,
+                            tool_args,
+                            tool_context,
+                        )
+
+                        # --------------------------------------------
+                        # 5. RESULT COLLECTION
+                        # --------------------------------------------
+                        collected = result_collector.collect(
+                            time_result
+                        )
+
+                        # --------------------------------------------
+                        # 6. RESULT VERIFICATION
+                        # --------------------------------------------
+                        verification = verify_tool_result(
+                            collected
+                        )
+
+                        # --------------------------------------------
+                        # 7. OBSERVATION FORMATTING
+                        # --------------------------------------------
+                        observation = tool_result_to_observation(
+                            time_result
+                        )
+
+                        if verification.valid:
+                            tool_results = observation
+
+                            # Current time is deterministic.
+                            # Return the verified tool result directly.
+                            direct_answer = (
+                                time_result.output
+                                or time_result.observation
+                            )
+
+                        else:
+                            tool_results = (
+                                f"Tool verification failed: "
+                                f"{verification.reason}"
+                            )
+
+                            if observation:
+                                tool_results += (
+                                    f"\n\n{observation}"
+                                )
+
+                            direct_answer = (
+                                time_result.error
+                                or verification.reason
+                            )
 
 
 
