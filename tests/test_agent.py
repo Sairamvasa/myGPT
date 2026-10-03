@@ -71,7 +71,7 @@ class TestAgentRun:
             "returned": 1,
         }
 
-        with patch("agents.agent.web_search", return_value=mock_result):
+        with patch("agents.tools.web_search", return_value=mock_result):
             agent = Agent()
             result = agent.run("what is the capital of France")
 
