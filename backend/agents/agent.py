@@ -492,82 +492,191 @@ class Agent:
                                 tool_results += f"\n\nSearch error: {web_result.error}"
 
         elif action == ACTION_PYTHON:
-
             print(f"[Agent Tool] Executing Python Code Interpreter...")
 
             # Check if user provided explicit Python code
-
-            code_match = re.search(r"```(?:python)?\s*([\s\S]*?)```", message, re.IGNORECASE)
+            code_match = re.search(
+                r"```(?:python)?\s*([\s\S]*?)```",
+                message,
+                re.IGNORECASE,
+            )
 
             if code_match:
-
                 code_to_run = code_match.group(1).strip()
-
             else:
-
-                # If user asked a calculation like 'calculate 15% of 850' or '2**100'
-
-                math_match = re.search(r"(?:calculate|compute|solve|eval|what is)\s+([0-9+\-*/^().\s%]+)", message, re.IGNORECASE)
+                # Deterministic arithmetic extraction
+                math_match = re.search(
+                    r"(?:calculate|compute|solve|eval|what is)\s+([0-9+\-*/^().\s%]+)",
+                    message,
+                    re.IGNORECASE,
+                )
 
                 if math_match:
-
                     expr = math_match.group(1).strip().replace("^", "**")
-
                     code_to_run = f"print({expr})"
-
                 else:
-
-                    # Try deterministic word-problem extraction
-
+                    # Deterministic word-problem extraction
                     wp_expr = _extract_word_problem(message)
 
                     if wp_expr is not None:
-
                         code_to_run = f"print({wp_expr})"
-
                     else:
-
                         code_to_run = None
 
-
-
-            if code_to_run:
-
-                python_result = tool_registry.execute(
-
-                    "python_exec",
-
-                    {"code": code_to_run},
-
-                    tool_context,
-
+            # ============================================================
+            # NO EXECUTABLE CODE FOUND
+            # ============================================================
+            if not code_to_run:
+                tool_results = (
+                    "Python code interpreter ready. "
+                    "(No explicit executable snippet parsed)."
                 )
 
+            else:
+                # ========================================================
+                # PHASE 3.8.1
+                # PYTHON TOOL ORCHESTRATION
+                #
+                # Select
+                #   ↓
+                # Validate
+                #   ↓
+                # Permission
+                #   ↓
+                # Execute
+                #   ↓
+                # Collect
+                #   ↓
+                # Verify
+                #   ↓
+                # Observe
+                # ========================================================
 
+                # --------------------------------------------------------
+                # 1. TOOL SELECTION
+                # --------------------------------------------------------
+                selected_tool = select_tool(action)
 
-                observation = tool_result_to_observation(python_result)
-
-
-
-                if python_result.success:
-
-                    output = python_result.output or python_result.observation
-
-                    tool_results = observation
+                if selected_tool != "python_exec":
+                    tool_results = (
+                        "Tool selection mismatch: expected python_exec."
+                    )
 
                     if not code_match:
-
-                        direct_answer = output
+                        direct_answer = tool_results
 
                 else:
+                    tool_args = {
+                        "code": code_to_run,
+                    }
 
-                    if not code_match:
+                    # ----------------------------------------------------
+                    # 2. TOOL VALIDATION
+                    # ----------------------------------------------------
+                    valid, validation_error = validate_tool_request(
+                        tool_registry,
+                        selected_tool,
+                        tool_args,
+                    )
 
-                        direct_answer = python_result.error or python_result.output
+                    if not valid:
+                        tool_results = (
+                            f"Tool validation failed: {validation_error}"
+                        )
 
-            else:
+                        if not code_match:
+                            direct_answer = tool_results
 
-                tool_results = "Python code interpreter ready. (No explicit executable snippet parsed)."
+                    else:
+                        # ------------------------------------------------
+                        # 3. TOOL PERMISSION
+                        # ------------------------------------------------
+                        permission = evaluate_tool_permission(
+                            tool_registry,
+                            selected_tool,
+                            user_confirmed=False,
+                        )
+
+                        if permission.decision == PermissionDecision.DENY:
+                            tool_results = (
+                                f"Tool permission denied: "
+                                f"{permission.reason}"
+                            )
+
+                            if not code_match:
+                                direct_answer = tool_results
+
+                        elif permission.decision == PermissionDecision.CONFIRM:
+                            tool_results = (
+                                f"Tool requires confirmation: "
+                                f"{permission.reason}"
+                            )
+
+                            if not code_match:
+                                direct_answer = tool_results
+
+                        else:
+                            # --------------------------------------------
+                            # 4. TOOL EXECUTION
+                            # --------------------------------------------
+                            python_result = tool_registry.execute(
+                                selected_tool,
+                                tool_args,
+                                tool_context,
+                            )
+
+                            # --------------------------------------------
+                            # 5. RESULT COLLECTION
+                            # --------------------------------------------
+                            collected = result_collector.collect(
+                                python_result
+                            )
+
+                            # --------------------------------------------
+                            # 6. RESULT VERIFICATION
+                            # --------------------------------------------
+                            verification = verify_tool_result(
+                                collected
+                            )
+
+                            # --------------------------------------------
+                            # 7. OBSERVATION FORMATTING
+                            # --------------------------------------------
+                            observation = tool_result_to_observation(
+                                python_result
+                            )
+
+                            if verification.valid:
+                                tool_results = observation
+
+                                # Calculations and word problems:
+                                # return deterministic result directly.
+                                #
+                                # Explicit Python code:
+                                # let the LLM formulate the final answer.
+                                if not code_match:
+                                    direct_answer = (
+                                        python_result.output
+                                        or python_result.observation
+                                    )
+
+                            else:
+                                tool_results = (
+                                    f"Tool verification failed: "
+                                    f"{verification.reason}"
+                                )
+
+                                if observation:
+                                    tool_results += (
+                                        f"\n\n{observation}"
+                                    )
+
+                                if not code_match:
+                                    direct_answer = (
+                                        python_result.error
+                                        or python_result.output
+                                        or verification.reason
+                                    )
 
 
 
