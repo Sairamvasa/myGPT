@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from pathlib import Path
 import os
 import sys
 
@@ -11,9 +12,11 @@ from backend.app import app
 client = TestClient(app)
 
 def test_vision_no_auth():
-    with open("test_image.jpg", "rb") as f:
+    image_path = Path(__file__).resolve().parent / "test_image.jpg"
+
+    with open(image_path, "rb") as f:
         response = client.post("/vision", files={"file": f}, data={"prompt": "hello"})
-    assert response.status_code == 401
+        assert response.status_code == 401
 
 def test_vision_bad_image():
     # Login to get token
