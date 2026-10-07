@@ -38,12 +38,15 @@ def _reset_provider_registry():
 def _reset_rate_limiter():
     """Clear rate-limiter buckets before and after every test."""
     from rate_limiter import rate_limiter
-    saved_buckets = dict(rate_limiter._buckets)
+    saved_token_buckets = dict(rate_limiter._token_buckets)
+    saved_sliding_buckets = dict(rate_limiter._sliding_buckets)
     saved_configs = dict(rate_limiter._configs)
-    rate_limiter._buckets.clear()
+    rate_limiter._token_buckets.clear()
+    rate_limiter._sliding_buckets.clear()
     # Don't clear configs — they are set by the app lifespan.
     yield
-    rate_limiter._buckets = saved_buckets
+    rate_limiter._token_buckets = saved_token_buckets
+    rate_limiter._sliding_buckets = saved_sliding_buckets
     rate_limiter._configs = saved_configs
 
 

@@ -210,8 +210,18 @@ async def chat(
     tts_engine = state.get("api_tts_engine")
 
     try:
-        result = _voice_agent.process(user_text, chat_id, user_id, lang)
+        # Overall timeout for voice agent processing (STT already done)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_voice_agent.process, user_text, chat_id, user_id, lang),
+            timeout=60.0,
+        )
         response = result["response"]
+    except asyncio.TimeoutError:
+        logger.warning("Voice chat processing timed out for user_id=%s", user_id)
+        return JSONResponse(
+            status_code=504,
+            content={"error": "Voice processing timed out. Please try again."},
+        )
     except LLMError as e:
         logger.error(f"Voice chat LLM error: {e}")
         raise HTTPException(
@@ -235,10 +245,14 @@ async def chat(
     if speak and tts_engine and response:
         try:
             import base64
-            audio_bytes = await asyncio.to_thread(
-                tts_engine, response, lang if lang != "auto" else "en"
+            # Timeout for TTS synthesis
+            audio_bytes = await asyncio.wait_for(
+                asyncio.to_thread(tts_engine, response, lang if lang != "auto" else "en"),
+                timeout=30.0,
             )
             audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+        except asyncio.TimeoutError:
+            logger.warning("TTS synthesis timed out for user_id=%s", user_id)
         except Exception as exc:
             logger.warning(f"TTS failed: {exc}")
 
@@ -310,8 +324,18 @@ async def voice(
                 detected_lang = script_lang
 
         try:
-            result = _voice_agent.process(user_text, chat_id, user_id, detected_lang)
+            # Overall timeout for voice agent processing
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_voice_agent.process, user_text, chat_id, user_id, detected_lang),
+                timeout=60.0,
+            )
             response = result["response"]
+        except asyncio.TimeoutError:
+            logger.warning("Voice request processing timed out for user_id=%s", user_id)
+            return JSONResponse(
+                status_code=504,
+                content={"error": "Voice processing timed out. Please try again."},
+            )
         except LLMError as e:
             logger.error(f"Voice request LLM error: {e}")
             raise HTTPException(
@@ -335,10 +359,14 @@ async def voice(
         if speak and tts_engine and response:
             try:
                 import base64
-                audio_bytes = await asyncio.to_thread(
-                    tts_engine, response, detected_lang
+                # Timeout for TTS synthesis
+                audio_bytes = await asyncio.wait_for(
+                    asyncio.to_thread(tts_engine, response, detected_lang),
+                    timeout=30.0,
                 )
                 audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+            except asyncio.TimeoutError:
+                logger.warning("TTS synthesis timed out for user_id=%s", user_id)
             except Exception as exc:
                 logger.warning(f"TTS failed: {exc}")
 
@@ -377,8 +405,14 @@ async def tts(
     if not text:
         raise HTTPException(status_code=400, detail="Empty text.")
     try:
-        audio_bytes = await asyncio.to_thread(engine, text, language)
+        audio_bytes = await asyncio.wait_for(
+            asyncio.to_thread(engine, text, language),
+            timeout=30.0,
+        )
         return Response(content=audio_bytes, media_type="audio/mpeg")
+    except asyncio.TimeoutError:
+        logger.warning("TTS synthesis timed out for user_id=%s", user_id)
+        raise HTTPException(status_code=504, detail="TTS synthesis timed out.")
     except Exception as exc:
         logger.error(f"TTS synthesis failed: {exc}")
         raise HTTPException(status_code=500, detail="TTS synthesis failed.")

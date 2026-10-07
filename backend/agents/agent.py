@@ -1,3 +1,4 @@
+import logging
 import re
 
 import time
@@ -24,8 +25,7 @@ from agents.tool_registry import ToolContext
 
 from agents.tool_implementations import get_tool_registry
 
-from agents.memory_extractor import extract_memories
-
+from agents.memory import extract_and_store_memories
 from agents.memory_search import search_memories
 
 from agents.prompt_builder import build_prompt
@@ -36,10 +36,24 @@ from agents.planner import decide, ACTION_CHAT, ACTION_PYTHON, ACTION_TIME, ACTI
 
 from agents.sequence_detector import extract_sequence_from_message, detect_sequence_pattern, get_sequence_answer
 
-from agents.rag_verifier import verify_rag_answer, extract_code_entities_from_context, is_answer_safe_for_context
+from agents.execution_loop import AgentExecutor, ResourceLimits
 
+from backend.agents.memory_extractor import extract_memories
 from database import save_memory, get_history
 
+logger = logging.getLogger("MyGPT.Agent")
+
+
+_executor = AgentExecutor(
+    get_tool_registry(),
+    limits=ResourceLimits(
+        max_iterations=5,
+        max_tool_calls=10,
+        max_total_output_chars=256_000,
+        max_execution_seconds=120,
+        max_retries=2,
+    ),
+)
 
 
 # Personal markers that indicate the user is sharing information about themselves
@@ -188,844 +202,247 @@ class Agent:
 
 
     def run(self, message: str, chat_id=None, user_id=None, perf_context=None, project_id=None):
-
         started = time.perf_counter()
-
-        tool_registry = get_tool_registry()
-
-        tool_context = ToolContext(
-
-            user_id=user_id,
-
-            chat_id=chat_id,
-
-            project_id=project_id,
-
-        )
-
-        result_collector = ResultCollector()
-
-        # 1. Decide action / tools needed
-
-        action = decide(message)
-
-        if perf_context is not None:
-
-            perf_context.routing_ms = (time.perf_counter() - started) * 1000
-
-        tool_results = None
-
-        direct_answer = None
-
-
-
-        # 2. Extract and Persist Long-Term User Facts & Preferences
-
-        # Skip extraction for math/general knowledge/chat to reduce TTFT
-
-        if action not in (ACTION_MATH, ACTION_GENERAL_KNOWLEDGE) and _PERSONAL_MARKERS.search(message) and user_id is not None:
-
-            if action in (ACTION_MEMORY,):
-
-                facts = extract_memories(message)
-
-                for fact in facts:
-
-                    save_memory(fact, user_id)
-
-                if facts:
-
-                    print(f"[Memory] Saved {len(facts)} user fact(s): {facts}")
-
-
-
-        # Keep very simple greetings as a plain user message to avoid
-
-        # unnecessary prompt overhead.
-
-        _SIMPLE_GREETINGS = {"hi", "hello", "hey", "hi there", "hello there"}
-
-        if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE) and message.lower().strip() in _SIMPLE_GREETINGS:
-
-            return {
-
-                "prompt": message,
-
-                "history": [],
-
-                "context": None,
-
-                "memories": [],
-
-                "action": action,
-
-                "tool_results": None,
-
-                "answer": None,
-
-            }
-
-
-
-        # Check for sequence questions first (deterministic reasoning)
-
-        if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE):
-
-            seq_answer = get_sequence_answer(message)
-
-            if seq_answer is not None:
-
-                return {
-
-                    "prompt": message,
-
-                    "history": [],
-
-                    "context": None,
-
-                    "memories": [],
-
-                    "action": "sequence",
-
-                    "tool_results": None,
-
-                    "answer": seq_answer,
-
-                }
-
-
-
-        # 3. Retrieve Contexts
-
-        retrieval_started = time.perf_counter()
-
-        history = get_history(chat_id) if chat_id is not None else []
-
-        # The API persists the current user turn before invoking the agent so
-
-        # failures still leave a consistent conversation. Keep only prior
-
-        # turns in the history section because the current request is added
-
-        # explicitly by build_prompt().
-
-        if history and history[-1] == ("user", message):
-
-            history = history[:-1]
-
-
-
+        history = []
         memories = []
-
-        if user_id is not None and action in (ACTION_MEMORY, ACTION_WEB_RESEARCH):
-
-            memories = search_memories(message, user_id, action=action)
-
-
-
         context = None
+        tool_results = None
+        direct_answer = None
+        action = "chat"
 
-        rag_unavailable = False
-
-
-
-        contextual_followup = bool(
-
-            re.search(
-
-                r"\b(?:what|how|why|where|which|does|is|are|explain|describe)\b.*\b(?:this|that|it|here|there|output|result|return|returns|value|function|code|script|file)\b",
-
-                message,
-
-                re.IGNORECASE,
-
+        try:
+            tool_registry = get_tool_registry()
+            tool_context = ToolContext(
+                user_id=user_id,
+                chat_id=chat_id,
+                project_id=project_id,
             )
+            result_collector = ResultCollector()
 
-        )
+            action = decide(message)
 
+            if perf_context is not None:
+                perf_context.routing_ms = (time.perf_counter() - started) * 1000
 
-
-        # Check RAG for rag, code_explanation actions (when user asks about uploaded files)
-
-        
-        if (
-    action == ACTION_CODE_EXPLANATION
-    or (contextual_followup and action != ACTION_RAG)
-) and user_id is not None:
-
-            try:
-
-                from rag import search_pdf
-
-            except ImportError:
-
-                search_pdf = None
-
-
-
-            # Project context takes precedence — project files are scoped to project_id
-
-            if project_id is not None:
-
+            # 2. Extract and Persist Long-Term User Facts & Preferences
+            if action not in (ACTION_MATH, ACTION_GENERAL_KNOWLEDGE) and _PERSONAL_MARKERS.search(message) and user_id is not None:
                 try:
-
-                    from rag import search_project_pdf
-
-                    context = search_project_pdf(message, project_id)
-
-                except ImportError:
-
-                    context = None
-
-            elif search_pdf is not None:
-
-                context = search_pdf(message, user_id)
-
-            else:
-
-                rag_unavailable = True
-
-            # RAG excludes arbitrary chat history to prevent contamination.
-
-            # Only clear history if we actually found relevant document context.
-
-            if context:
-
-                history = []
-
-            # For RAG queries with document context, suppress long-term memories
-
-            # to prevent memory contamination of grounded answers.
-
-            if context:
-
-                memories = []
-
-                if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE):
-
-                    action = ACTION_RAG
-
-
-
-        # For non-greeting chat messages without history/memories, use plain prompt
-
-        if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE) and not history and not memories:
-
-            return {
-
-                "prompt": message,
-
-                "history": [],
-
-                "context": None,
-
-                "memories": [],
-
-                "action": action,
-
-                "tool_results": None,
-
-                "answer": None,
-
-            }
-
-
-
-        # 4. Execute Autonomous Tools Based on Intent
-        if action in (ACTION_WEB, ACTION_CURRENT_INFO, ACTION_WEB_RESEARCH):
-            print(f"[Agent Tool] Executing Web Search for: {message}")
-
-            selected_tool = select_tool(action)
-
-            if selected_tool != "web_search":
-                tool_results = "Tool selection mismatch: expected web_search."
-            else:
-                tool_args = {
-                    "query": message,
-                    "max_results": 5,
-                }
-
-                valid, validation_error = validate_tool_request(
-                    tool_registry,
-                    selected_tool,
-                    tool_args,
-                )
-
-                if not valid:
-                    tool_results = f"Tool validation failed: {validation_error}"
-                else:
-                    permission = evaluate_tool_permission(
-                        tool_registry,
-                        selected_tool,
-                        user_confirmed=False,
+                    if action in (ACTION_MEMORY,):
+                        stored = extract_and_store_memories(
+                            message,
+                            user_id=user_id,
+                        )
+                        if stored:
+                            logger.info(
+                                "Memory extraction stored %d fact(s) for user_id=%s",
+                                len(stored),
+                                user_id,
+                            )
+                except Exception:
+                    logger.exception(
+                        "Memory extraction failed for user_id=%s action=%s",
+                        user_id,
+                        action,
                     )
 
-                    if permission.decision == PermissionDecision.DENY:
-                        tool_results = (
-                            f"Tool permission denied: {permission.reason}"
-                        )
-                    elif permission.decision == PermissionDecision.CONFIRM:
-                        tool_results = (
-                            f"Tool requires confirmation: {permission.reason}"
-                        )
-                    else:
-                        web_result = tool_registry.execute(
-                            selected_tool,
-                            tool_args,
-                            tool_context,
-                        )
+            _SIMPLE_GREETINGS = {"hi", "hello", "hey", "hi there", "hello there"}
 
-                        collected = result_collector.collect(web_result)
-                        verification = verify_tool_result(collected)
+            if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE) and message.lower().strip() in _SIMPLE_GREETINGS:
+                return {
+                    "prompt": message,
+                    "history": [],
+                    "context": None,
+                    "memories": [],
+                    "action": action,
+                    "tool_results": None,
+                    "answer": None,
+                }
 
-                        if verification.valid:
-                            observation = tool_result_to_observation(web_result)
-                            tool_results = observation
-                        else:
-                            if action in (ACTION_CURRENT_INFO, ACTION_WEB_RESEARCH):
-                                tool_results = (
-                                    "Web search returned no results for this current "
-                                    "information query. Do not fabricate current prices, "
-                                    "rates, or values. Inform the user that current "
-                                    "information could not be verified."
-                                )
-                            else:
-                                tool_results = "Web search returned no results."
+            # Check for sequence questions first (deterministic reasoning)
+            if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE):
+                seq_answer = get_sequence_answer(message)
+                if seq_answer is not None:
+                    return {
+                        "prompt": message,
+                        "history": [],
+                        "context": None,
+                        "memories": [],
+                        "action": "sequence",
+                        "tool_results": None,
+                        "answer": seq_answer,
+                    }
 
-                            if web_result.error:
-                                tool_results += f"\n\nSearch error: {web_result.error}"
+            retrieval_started = time.perf_counter()
+            try:
+                history = get_history(chat_id) if chat_id is not None else []
+            except Exception:
+                logger.exception("History retrieval failed for chat_id=%s", chat_id)
+                history = []
 
-        elif action == ACTION_PYTHON:
-            print(f"[Agent Tool] Executing Python Code Interpreter...")
+            if history and history[-1] == ("user", message):
+                history = history[:-1]
 
-            # Check if user provided explicit Python code
-            code_match = re.search(
-                r"```(?:python)?\s*([\s\S]*?)```",
-                message,
-                re.IGNORECASE,
-            )
+            memories = []
+            try:
+                if user_id is not None and action in (ACTION_MEMORY, ACTION_WEB_RESEARCH):
+                    memories = search_memories(message, user_id, action=action)
+            except Exception:
+                logger.exception("Memory search failed for user_id=%s action=%s", user_id, action)
+                memories = []
 
-            if code_match:
-                code_to_run = code_match.group(1).strip()
-            else:
-                # Deterministic arithmetic extraction
-                math_match = re.search(
-                    r"(?:calculate|compute|solve|eval|what is)\s+([0-9+\-*/^().\s%]+)",
+            rag_unavailable = False
+            contextual_followup = bool(
+                re.search(
+                    r"\b(?:what|how|why|where|which|does|is|are|explain|describe)\b.*\b(?:this|that|it|here|there|output|result|return|returns|value|function|code|script|file)\b",
                     message,
                     re.IGNORECASE,
                 )
+            )
 
-                if math_match:
-                    expr = math_match.group(1).strip().replace("^", "**")
-                    code_to_run = f"print({expr})"
+            if (
+                action == ACTION_CODE_EXPLANATION
+                or (contextual_followup and action != ACTION_RAG)
+            ) and user_id is not None:
+                try:
+                    from rag import search_pdf
+                except ImportError:
+                    search_pdf = None
+
+                if project_id is not None:
+                    try:
+                        from rag import search_project_pdf
+                        context = search_project_pdf(message, project_id)
+                    except Exception:
+                        logger.exception(
+                            "Project RAG retrieval failed for project_id=%s user_id=%s",
+                            project_id,
+                            user_id,
+                        )
+                        context = None
+                elif search_pdf is not None:
+                    try:
+                        context = search_pdf(message, user_id)
+                    except Exception:
+                        logger.exception(
+                            "User RAG retrieval failed for user_id=%s",
+                            user_id,
+                        )
+                        context = None
                 else:
-                    # Deterministic word-problem extraction
-                    wp_expr = _extract_word_problem(message)
+                    rag_unavailable = True
 
-                    if wp_expr is not None:
-                        code_to_run = f"print({wp_expr})"
-                    else:
-                        code_to_run = None
+                if context:
+                    history = []
+                if context:
+                    memories = []
+                    if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE):
+                        action = ACTION_RAG
 
-            # ============================================================
-            # NO EXECUTABLE CODE FOUND
-            # ============================================================
-            if not code_to_run:
-                tool_results = (
-                    "Python code interpreter ready. "
-                    "(No explicit executable snippet parsed)."
-                )
-
-            else:
-                # ========================================================
-                # PHASE 3.8.1
-                # PYTHON TOOL ORCHESTRATION
-                #
-                # Select
-                #   ↓
-                # Validate
-                #   ↓
-                # Permission
-                #   ↓
-                # Execute
-                #   ↓
-                # Collect
-                #   ↓
-                # Verify
-                #   ↓
-                # Observe
-                # ========================================================
-
-                # --------------------------------------------------------
-                # 1. TOOL SELECTION
-                # --------------------------------------------------------
-                selected_tool = select_tool(action)
-
-                if selected_tool != "python_exec":
-                    tool_results = (
-                        "Tool selection mismatch: expected python_exec."
-                    )
-
-                    if not code_match:
-                        direct_answer = tool_results
-
-                else:
-                    tool_args = {
-                        "code": code_to_run,
-                    }
-
-                    # ----------------------------------------------------
-                    # 2. TOOL VALIDATION
-                    # ----------------------------------------------------
-                    valid, validation_error = validate_tool_request(
-                        tool_registry,
-                        selected_tool,
-                        tool_args,
-                    )
-
-                    if not valid:
-                        tool_results = (
-                            f"Tool validation failed: {validation_error}"
-                        )
-
-                        if not code_match:
-                            direct_answer = tool_results
-
-                    else:
-                        # ------------------------------------------------
-                        # 3. TOOL PERMISSION
-                        # ------------------------------------------------
-                        permission = evaluate_tool_permission(
-                            tool_registry,
-                            selected_tool,
-                            user_confirmed=False,
-                        )
-
-                        if permission.decision == PermissionDecision.DENY:
-                            tool_results = (
-                                f"Tool permission denied: "
-                                f"{permission.reason}"
-                            )
-
-                            if not code_match:
-                                direct_answer = tool_results
-
-                        elif permission.decision == PermissionDecision.CONFIRM:
-                            tool_results = (
-                                f"Tool requires confirmation: "
-                                f"{permission.reason}"
-                            )
-
-                            if not code_match:
-                                direct_answer = tool_results
-
-                        else:
-                            # --------------------------------------------
-                            # 4. TOOL EXECUTION
-                            # --------------------------------------------
-                            python_result = tool_registry.execute(
-                                selected_tool,
-                                tool_args,
-                                tool_context,
-                            )
-
-                            # --------------------------------------------
-                            # 5. RESULT COLLECTION
-                            # --------------------------------------------
-                            collected = result_collector.collect(
-                                python_result
-                            )
-
-                            # --------------------------------------------
-                            # 6. RESULT VERIFICATION
-                            # --------------------------------------------
-                            verification = verify_tool_result(
-                                collected
-                            )
-
-                            # --------------------------------------------
-                            # 7. OBSERVATION FORMATTING
-                            # --------------------------------------------
-                            observation = tool_result_to_observation(
-                                python_result
-                            )
-
-                            if verification.valid:
-                                tool_results = observation
-
-                                # Calculations and word problems:
-                                # return deterministic result directly.
-                                #
-                                # Explicit Python code:
-                                # let the LLM formulate the final answer.
-                                if not code_match:
-                                    direct_answer = (
-                                        python_result.output
-                                        or python_result.observation
-                                    )
-
-                            else:
-                                tool_results = (
-                                    f"Tool verification failed: "
-                                    f"{verification.reason}"
-                                )
-
-                                if observation:
-                                    tool_results += (
-                                        f"\n\n{observation}"
-                                    )
-
-                                if not code_match:
-                                    direct_answer = (
-                                        python_result.error
-                                        or python_result.output
-                                        or verification.reason
-                                    )
-
-
-
-        elif action == ACTION_TIME:
-            print("[Agent Tool] Executing Current Time Tool...")
-
-            # --------------------------------------------
-            # 1. TOOL SELECTION
-            # --------------------------------------------
-            selected_tool = select_tool(action)
-
-            if selected_tool != "get_current_time":
-                tool_results = (
-                    "Tool selection mismatch: "
-                    "expected get_current_time."
-                )
-
-            else:
-                tool_args = {}
-
-                # --------------------------------------------
-                # 2. TOOL VALIDATION
-                # --------------------------------------------
-                valid, validation_error = validate_tool_request(
-                    tool_registry,
-                    selected_tool,
-                    tool_args,
-                )
-
-                if not valid:
-                    tool_results = (
-                        f"Tool validation failed: "
-                        f"{validation_error}"
-                    )
-
-                else:
-                    # --------------------------------------------
-                    # 3. PERMISSION / RISK CHECK
-                    # --------------------------------------------
-                    permission = evaluate_tool_permission(
-                        tool_registry,
-                        selected_tool,
-                        user_confirmed=False,
-                    )
-
-                    if permission.decision == PermissionDecision.DENY:
-                        tool_results = (
-                            f"Tool permission denied: "
-                            f"{permission.reason}"
-                        )
-
-                    elif permission.decision == PermissionDecision.CONFIRM:
-                        tool_results = (
-                            f"Tool requires confirmation: "
-                            f"{permission.reason}"
-                        )
-
-                    else:
-                        # --------------------------------------------
-                        # 4. TOOL EXECUTION
-                        # --------------------------------------------
-                        time_result = tool_registry.execute(
-                            selected_tool,
-                            tool_args,
-                            tool_context,
-                        )
-
-                        # --------------------------------------------
-                        # 5. RESULT COLLECTION
-                        # --------------------------------------------
-                        collected = result_collector.collect(
-                            time_result
-                        )
-
-                        # --------------------------------------------
-                        # 6. RESULT VERIFICATION
-                        # --------------------------------------------
-                        verification = verify_tool_result(
-                            collected
-                        )
-
-                        # --------------------------------------------
-                        # 7. OBSERVATION FORMATTING
-                        # --------------------------------------------
-                        observation = tool_result_to_observation(
-                            time_result
-                        )
-
-                        if verification.valid:
-                            tool_results = observation
-
-                            # Current time is deterministic.
-                            # Return the verified tool result directly.
-                            direct_answer = (
-                                time_result.output
-                                or time_result.observation
-                            )
-
-                        else:
-                            tool_results = (
-                                f"Tool verification failed: "
-                                f"{verification.reason}"
-                            )
-
-                            if observation:
-                                tool_results += (
-                                    f"\n\n{observation}"
-                                )
-
-                            direct_answer = (
-                                time_result.error
-                                or verification.reason
-                            )
-
-
-
-        elif action == ACTION_RAG:
-            print("[Agent Tool] Executing RAG Search...")
-
-            # ------------------------------------------------------------
-            # 1. TOOL SELECTION
-            # ------------------------------------------------------------
-            selected_tool = select_tool(action)
-
-            if selected_tool != "rag_search":
-                tool_results = (
-                    "Tool selection mismatch: expected rag_search."
-                )
-
-            else:
-                # --------------------------------------------------------
-                # 2. TOOL ARGUMENTS
-                # --------------------------------------------------------
-                tool_args = {
-                    "query": message,
+            if action in (ACTION_CHAT, ACTION_GENERAL_KNOWLEDGE, ACTION_CREATIVE) and not history and not memories:
+                return {
+                    "prompt": message,
+                    "history": [],
+                    "context": None,
+                    "memories": [],
+                    "action": action,
+                    "tool_results": None,
+                    "answer": None,
                 }
 
-                # --------------------------------------------------------
-                # 3. TOOL VALIDATION
-                # --------------------------------------------------------
-                valid, validation_error = validate_tool_request(
-                    tool_registry,
-                    selected_tool,
-                    tool_args,
-                )
-
-                if not valid:
+            if action in (ACTION_CODE, ACTION_CODE_EXPLANATION):
+                if action == ACTION_CODE:
                     tool_results = (
-                        f"Tool validation failed: {validation_error}"
+                        "CODE GENERATION\n"
+                        "Tool: code_generation\n"
+                        "Status: success\n\n"
+                        "Observation:\n"
+                        "Code generation requested. The generated code will be produced by the LLM."
                     )
-
-                else:
-                    # ----------------------------------------------------
-                    # 4. TOOL PERMISSION / RISK
-                    # ----------------------------------------------------
-                    permission = evaluate_tool_permission(
-                        tool_registry,
-                        selected_tool,
-                        user_confirmed=False,
-                    )
-
-                    if permission.decision == PermissionDecision.DENY:
+                    context = None
+                elif action == ACTION_CODE_EXPLANATION:
+                    if context:
                         tool_results = (
-                            f"Tool permission denied: "
-                            f"{permission.reason}"
+                            "CODE EXPLANATION REQUEST:\n"
+                            "Explain the previously provided code from uploaded documents.\n"
+                            "Requirements:\n"
+                            "- Explain line by line or section by section as requested\n"
+                            "- Reference actual code from the document context\n"
+                            "- Do NOT invent code that isn't in the context\n"
+                            "- If context doesn't contain the answer, say so honestly\n"
                         )
-
-                    elif permission.decision == PermissionDecision.CONFIRM:
-                        tool_results = (
-                            f"Tool requires confirmation: "
-                            f"{permission.reason}"
-                        )
-
                     else:
-                        # ------------------------------------------------
-                        # 5. TOOL EXECUTION
-                        # ------------------------------------------------
-                        rag_result = tool_registry.execute(
-                            selected_tool,
-                            tool_args,
-                            tool_context,
+                        tool_results = (
+                            "CODE EXPLANATION REQUEST:\n"
+                            "Explain code from conversation history.\n"
+                            "Requirements:\n"
+                            "- Reference the actual code from previous messages\n"
+                            "- Explain line by line or section by section as requested\n"
+                            "- Do NOT generate new unrelated code\n"
                         )
-
-                        # ------------------------------------------------
-                        # 6. RESULT COLLECTION
-                        # ------------------------------------------------
-                        collected = result_collector.collect(
-                            rag_result
-                        )
-
-                        # ------------------------------------------------
-                        # 7. RESULT VERIFICATION
-                        # ------------------------------------------------
-                        verification = verify_tool_result(
-                            collected
-                        )
-
-                        # ------------------------------------------------
-                        # 8. OBSERVATION FORMATTING
-                        # ------------------------------------------------
-                        observation = tool_result_to_observation(
-                            rag_result
-                        )
-
-                        # ------------------------------------------------
-                        # 9. HANDLE RESULT
-                        # ------------------------------------------------
-
-                        if rag_result.success and rag_result.output:
-                            # Actual document context was retrieved.
-
-                            context = rag_result.output
-
-                            # RAG answers must be grounded only in
-                            # retrieved document context.
-                            history = []
-                            memories = []
-
-                            tool_results = observation
-
-                        elif rag_result.success and not rag_result.output:
-                            # Tool executed successfully, but no relevant
-                            # document content was found.
-
-                            tool_results = None
-                            context = None
-                            action = ACTION_CHAT
-
-                        else:
-                            # Retrieval itself failed.
-
-                            tool_results = observation
-
-                            if not tool_results:
-                                tool_results = (
-                                    "Document retrieval failed."
-                                )
-
-                            if not verification.valid:
-                                tool_results += (
-                                    f"\n\nVerification: "
-                                    f"{verification.reason}"
-                                )
-
-
-        elif action == ACTION_CODE:
-            tool_results = (
-
-                "CODE GENERATION\n"
-
-                "Tool: code_generation\n"
-
-                "Status: success\n\n"
-
-                "Observation:\n"
-
-                "Code generation requested. The generated code will be produced by the LLM."
-
-            )
-            context = None
-
-        elif action == ACTION_CODE_EXPLANATION:
-
-            if context:
-
-                tool_results = (
-
-                    "CODE EXPLANATION REQUEST:\n"
-
-                    "Explain the previously provided code from uploaded documents.\n"
-
-                    "Requirements:\n"
-
-                    "- Explain line by line or section by section as requested\n"
-
-                    "- Reference actual code from the document context\n"
-
-                    "- Do NOT invent code that isn't in the context\n"
-
-                    "- If context doesn't contain the answer, say so honestly\n"
-
-                )
-
             else:
-
-                tool_results = (
-
-                    "CODE EXPLANATION REQUEST:\n"
-
-                    "Explain code from conversation history.\n"
-
-                    "Requirements:\n"
-
-                    "- Reference the actual code from previous messages\n"
-
-                    "- Explain line by line or section by section as requested\n"
-
-                    "- Do NOT generate new unrelated code\n"
-
+                outcome = _executor.execute(
+                    message,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    project_id=project_id,
                 )
+                tool_results = outcome.tool_results
+                direct_answer = outcome.answer
+                action = outcome.final_action or action
 
+                if action == ACTION_RAG and outcome.steps:
+                    last_step = outcome.steps[-1]
+                    if last_step.result and last_step.result.success and last_step.result.output:
+                        context = last_step.result.output
+                        history = []
+                        memories = []
+                    elif last_step.result and last_step.result.success and not last_step.result.output:
+                        context = None
+                        action = ACTION_CHAT
+                    elif not last_step.verified and last_step.error:
+                        if tool_results:
+                            tool_results += f"\n\nVerification: {last_step.error}"
 
+                if outcome.error and not tool_results:
+                    tool_results = outcome.error
 
-        # 5. Assemble Structured Context Prompt
+            if perf_context is not None:
+                perf_context.retrieval_ms += (time.perf_counter() - retrieval_started) * 1000
+                prompt_started = time.perf_counter()
 
-        if perf_context is not None:
+            prompt = build_prompt(
+                question=message,
+                history=history,
+                memories=memories,
+                context=context,
+                tool_results=tool_results,
+            )
 
-            perf_context.retrieval_ms += (time.perf_counter() - retrieval_started) * 1000
+            if perf_context is not None:
+                perf_context.prompt_build_ms = (time.perf_counter() - prompt_started) * 1000
 
-            prompt_started = time.perf_counter()
-
-        prompt = build_prompt(
-
-            question=message,
-
-            history=history,
-
-            memories=memories,
-
-            context=context,
-
-            tool_results=tool_results
-
-        )
-
-        if perf_context is not None:
-
-            perf_context.prompt_build_ms = (time.perf_counter() - prompt_started) * 1000
-
-
-
-        return {
-
-            "prompt": prompt,
-
-            "history": history,
-
-            "context": context,
-
-            "memories": memories,
-
-            "action": action,
-
-            "tool_results": tool_results,
-
-            "answer": direct_answer,
-
-        }
+            return {
+                "prompt": prompt,
+                "history": history,
+                "context": context,
+                "memories": memories,
+                "action": action,
+                "tool_results": tool_results,
+                "answer": direct_answer,
+            }
+        except Exception:
+            logger.exception(
+                "Agent execution failed for user_id=%s chat_id=%s action=%s",
+                user_id,
+                chat_id,
+                action,
+            )
+            return {
+                "prompt": message,
+                "history": history,
+                "context": None,
+                "memories": memories,
+                "action": "error",
+                "tool_results": "[AGENT_ERROR] A request processing error occurred. Please try again.",
+                "answer": None,
+            }

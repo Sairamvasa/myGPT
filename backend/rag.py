@@ -1,692 +1,2615 @@
 import os
+
+
+
 import json
+
+
+
 from pathlib import Path
 
+
+
+
+
+
+
 from pypdf import PdfReader
+
+
+
 from langchain_core.documents import Document
+
+
+
 from langchain_community.vectorstores import FAISS
+
+
+
 from langchain_huggingface import HuggingFaceEmbeddings
 
 
+
+
+
+
+
+
+
+
+
 BASE_DIR = Path(__file__).resolve().parent
+
+
+
 RAG_STORAGE_DIR = Path(
+
+
+
     os.getenv("RAG_STORAGE_DIR", str(BASE_DIR / "rag_indexes"))
+
+
+
 )
 
+
+
+
+
+
+
 # Relevance threshold for FAISS L2 distance scores.
+
+
+
 # FAISS uses Euclidean distance (L2) where LOWER = more relevant.
+
+
+
 # Observed score distribution:
+
+
+
 #   Relevant queries (calculator.py):   1.4584 – 1.5744
+
+
+
 #   Unrelated queries:                   1.8368 – 1.9164
+
+
+
 # A threshold of 1.70 sits safely in the gap and rejects weak matches.
+
+
+
 RAG_RELEVANCE_THRESHOLD = float(
+
+
+
     os.getenv("RAG_RELEVANCE_THRESHOLD", "1.70")
+
+
+
 )
+
+
+
+
+
+
+
+
+
 
 
 class RecursiveCharacterTextSplitter:
+
+
+
     def __init__(self, chunk_size=1500, chunk_overlap=200, separators=None):
+
+
+
         self._chunk_size = chunk_size
+
+
+
         self._chunk_overlap = chunk_overlap
+
+
+
         self._separators = separators or ["\n\n", "\n", " ", ""]
 
+
+
+
+
+
+
     def split_text(self, text: str) -> list[str]:
+
+
+
         return self._split_text(text, self._separators)
 
+
+
+
+
+
+
     def _split_text(self, text: str, separators: list[str]) -> list[str]:
+
+
+
         separator = separators[-1]
+
+
+
         new_separators = []
+
+
+
         for i, s in enumerate(separators):
+
+
+
             if not s:
+
+
+
                 separator = s
+
+
+
                 break
+
+
+
             if s in text:
+
+
+
                 separator = s
+
+
+
                 new_separators = separators[i + 1:]
+
+
+
                 break
+
+
+
+
+
+
 
         if separator:
+
+
+
             splits = text.split(separator)
+
+
+
         else:
+
+
+
             splits = list(text)
+
+
+
         splits = [s for s in splits if s]
 
+
+
+
+
+
+
         final_chunks = []
+
+
+
         good_splits = []
+
+
+
         for s in splits:
+
+
+
             if len(s) < self._chunk_size:
+
+
+
                 good_splits.append(s)
+
+
+
             else:
+
+
+
                 if good_splits:
+
+
+
                     merged = self._merge_splits(good_splits, separator)
+
+
+
                     final_chunks.extend(merged)
+
+
+
                     good_splits = []
+
+
+
                 if not new_separators:
+
+
+
                     final_chunks.append(s)
+
+
+
                 else:
+
+
+
                     other_info = self._split_text(s, new_separators)
+
+
+
                     final_chunks.extend(other_info)
+
+
+
         if good_splits:
+
+
+
             merged = self._merge_splits(good_splits, separator)
+
+
+
             final_chunks.extend(merged)
+
+
+
         return final_chunks
 
+
+
+
+
+
+
     def _merge_splits(self, splits: list[str], separator: str) -> list[str]:
+
+
+
         separator_len = len(separator)
+
+
+
         docs = []
+
+
+
         current_doc = []
+
+
+
         total = 0
+
+
+
         for d in splits:
+
+
+
             len_ = len(d)
+
+
+
             if (
+
+
+
                 total + len_ + (separator_len if len(current_doc) > 0 else 0)
+
+
+
                 > self._chunk_size
+
+
+
             ):
+
+
+
                 if len(current_doc) > 0:
+
+
+
                     doc = separator.join(current_doc)
+
+
+
                     if doc:
+
+
+
                         docs.append(doc)
+
+
+
                     while (
+
+
+
                         total > self._chunk_overlap
+
+
+
                         or (
+
+
+
                             total + len_ + (separator_len if len(current_doc) > 0 else 0)
+
+
+
                             > self._chunk_size
+
+
+
                             and total > 0
+
+
+
                         )
+
+
+
                     ):
+
+
+
                         total -= len(current_doc[0]) + (
+
+
+
                             separator_len if len(current_doc) > 1 else 0
+
+
+
                         )
+
+
+
                         current_doc = current_doc[1:]
+
+
+
             current_doc.append(d)
+
+
+
             total += len_ + (separator_len if len(current_doc) > 1 else 0)
+
+
+
         if current_doc:
+
+
+
             doc = separator.join(current_doc)
+
+
+
             if doc:
+
+
+
                 docs.append(doc)
+
+
+
         return docs
 
+
+
+
+
+
+
 # Per-user vector databases: {user_id: FAISS store}
+
+
+
 vector_stores = {}
 
+
+
+
+
+
+
 # Per-project vector databases: {"project_{project_id}": FAISS store}
+
+
+
 project_vector_stores = {}
 
+
+
+
+
+
+
 # Per-user uploaded file names: {user_id: set of filenames}
+
+
+
 uploaded_files_map = {}
 
+
+
+
+
+
+
 # Per-project uploaded file names: {"project_{project_id}": set of filenames}
+
+
+
 project_files_map = {}
 
+
+
+
+
+
+
 # Lazy load embedding model to prevent startup crashes.
+
+
+
 embeddings = None
 
 
+
+
+
+
+
+
+
+
+
 def _project_key(project_id):
+
+
+
     """Return the namespace key used for project-scoped RAG."""
+
+
+
     return f"project_{project_id}"
 
 
+
+
+
+
+
+
+
+
+
 def _user_index_dir(user_id):
+
+
+
     return RAG_STORAGE_DIR / str(user_id)
 
 
+
+
+
+
+
+
+
+
+
 def _project_index_dir(project_id):
+
+
+
     return RAG_STORAGE_DIR / "projects" / str(project_id)
 
 
+
+
+
+
+
+
+
+
+
 def _manifest_path(user_id):
+
+
+
     return _user_index_dir(user_id) / "files.json"
 
 
+
+
+
+
+
+
+
+
+
 def _project_manifest_path(project_id):
+
+
+
     return _project_index_dir(project_id) / "files.json"
 
 
+
+
+
+
+
+
+
+
+
 def _persist_user_state(user_id):
+
+
+
     vector_store = vector_stores.get(user_id)
+
+
+
     if vector_store is None:
+
+
+
         return
 
+
+
+
+
+
+
     index_dir = _user_index_dir(user_id)
+
+
+
     index_dir.mkdir(parents=True, exist_ok=True)
+
+
+
     vector_store.save_local(str(index_dir))
 
+
+
+
+
+
+
     with _manifest_path(user_id).open("w", encoding="utf-8") as manifest:
+
+
+
         json.dump(sorted(uploaded_files_map.get(user_id, set())), manifest)
 
 
+
+
+
+
+
+
+
+
+
 def _persist_project_state(project_id):
+
+
+
     """Persist a project's FAISS index and file manifest to disk."""
+
+
+
     vector_store = project_vector_stores.get(_project_key(project_id))
+
+
+
     if vector_store is None:
+
+
+
         return
 
+
+
+
+
+
+
     index_dir = _project_index_dir(project_id)
+
+
+
     index_dir.mkdir(parents=True, exist_ok=True)
+
+
+
     vector_store.save_local(str(index_dir))
 
+
+
+
+
+
+
     with _project_manifest_path(project_id).open("w", encoding="utf-8") as manifest:
+
+
+
         json.dump(sorted(project_files_map.get(_project_key(project_id), set())), manifest)
 
 
+
+
+
+
+
+
+
+
+
 def _load_user_state(user_id):
+
+
+
     if user_id in vector_stores:
+
+
+
         return True
+
+
+
+
+
+
 
     index_dir = _user_index_dir(user_id)
+
+
+
     if not (index_dir / "index.faiss").exists():
+
+
+
         return False
+
+
+
+
+
+
 
     try:
+
+
+
         vector_stores[user_id] = FAISS.load_local(
+
+
+
             str(index_dir),
+
+
+
             get_embeddings(),
+
+
+
             allow_dangerous_deserialization=True,
+
+
+
         )
 
+
+
+
+
+
+
         manifest_path = _manifest_path(user_id)
+
+
+
         if manifest_path.exists():
+
+
+
             with manifest_path.open("r", encoding="utf-8") as manifest:
+
+
+
                 uploaded_files_map[user_id] = set(json.load(manifest))
+
+
+
         else:
+
+
+
             uploaded_files_map[user_id] = {
+
+
+
                 document.metadata.get("source", "")
+
+
+
                 for document in vector_stores[user_id].docstore._dict.values()
+
+
+
                 if document.metadata.get("source")
+
+
+
             }
 
+
+
+
+
+
+
         return True
+
+
+
     except Exception as error:
+
+
+
         print(f"Unable to load persisted RAG index for user {user_id}: {error}")
+
+
+
         vector_stores.pop(user_id, None)
+
+
+
         uploaded_files_map.pop(user_id, None)
+
+
+
         return False
+
+
+
+
+
+
+
+
+
 
 
 def _load_project_state(project_id):
+
+
+
     """Load a project's FAISS index from disk into memory."""
+
+
+
     key = _project_key(project_id)
+
+
+
     if key in project_vector_stores:
+
+
+
         return True
+
+
+
+
+
+
 
     index_dir = _project_index_dir(project_id)
+
+
+
     if not (index_dir / "index.faiss").exists():
+
+
+
         return False
+
+
+
+
+
+
 
     try:
+
+
+
         project_vector_stores[key] = FAISS.load_local(
+
+
+
             str(index_dir),
+
+
+
             get_embeddings(),
+
+
+
             allow_dangerous_deserialization=True,
+
+
+
         )
+
+
+
+
+
+
 
         manifest_path = _project_manifest_path(project_id)
+
+
+
         if manifest_path.exists():
+
+
+
             with manifest_path.open("r", encoding="utf-8") as manifest:
+
+
+
                 project_files_map[key] = set(json.load(manifest))
+
+
+
         else:
+
+
+
             project_files_map[key] = {
+
+
+
                 document.metadata.get("source", "")
+
+
+
                 for document in project_vector_stores[key].docstore._dict.values()
+
+
+
                 if document.metadata.get("source")
+
+
+
             }
 
+
+
+
+
+
+
         return True
+
+
+
     except Exception as error:
+
+
+
         print(f"Unable to load persisted project RAG index for project {project_id}: {error}")
+
+
+
         project_vector_stores.pop(key, None)
+
+
+
         project_files_map.pop(key, None)
+
+
+
         return False
 
+
+
+
+
+
+
 def get_embeddings():
+
+
+
     global embeddings
+
+
+
     if embeddings is None:
+
+
+
         # Remove local_files_only=True on Railway so it can download
+
+
+
         is_railway = "RAILWAY_ENVIRONMENT" in os.environ
+
+
+
         model_kwargs = {} if is_railway else {"local_files_only": True}
+
+
+
         embeddings = HuggingFaceEmbeddings(
+
+
+
             model_name="sentence-transformers/all-MiniLM-L6-v2",
+
+
+
             model_kwargs=model_kwargs
+
+
+
         )
+
+
+
     return embeddings
 
 
+
+
+
+
+
 def process_pdf(pdf_path, user_id, source_filename=None, project_id=None):
+
     global vector_stores
+
     global uploaded_files_map
+
     global project_vector_stores
+
     global project_files_map
 
+
+
     if project_id is not None:
+
         return _process_pdf_project(pdf_path, source_filename, project_id)
 
+
+
     _load_user_state(user_id)
+
+
 
     reader = PdfReader(pdf_path)
 
     filename = source_filename or os.path.basename(pdf_path)
 
+
+
     splitter = RecursiveCharacterTextSplitter(
+
         chunk_size=1500,
+
         chunk_overlap=200
+
     )
+
+
 
     documents = []
 
+
+
     # Read every page
-    for page_number, page in enumerate(
-        reader.pages,
-        start=1
-    ):
+
+    for page_number, page in enumerate(reader.pages, start=1):
+
         page_text = page.extract_text()
 
+
+
         if not page_text:
+
             continue
+
+
 
         chunks = splitter.split_text(page_text)
 
-        for chunk in chunks:
+
+
+        for chunk_index, chunk in enumerate(chunks):
+
             documents.append(
+
                 Document(
+
                     page_content=chunk,
+
                     metadata={
+
                         "source": filename,
-                        "page": page_number
+
+                        "page": page_number,
+
+                        "chunk_id": (
+
+                            f"{filename}:page-{page_number}:"
+
+                            f"chunk-{chunk_index}"
+
+                        ),
+
+                        "chunk_index": chunk_index,
+
+                        "file_type": "pdf",
+
+                        "user_id": user_id,
+
+                        "scope": "user",
+
                     }
+
                 )
+
             )
 
+
+
     if not documents:
+
         raise ValueError(
+
             f"No readable text found in {filename}"
+
         )
+
+
 
     # First PDF for this user
+
     if user_id not in vector_stores:
+
         vector_stores[user_id] = FAISS.from_documents(
+
             documents,
+
             get_embeddings()
+
         )
 
-    # Second, third, fourth... PDF for this user
     else:
-        vector_stores[user_id].add_documents(
-            documents
-        )
+
+        # Additional PDFs
+
+        vector_stores[user_id].add_documents(documents)
+
+
 
     if user_id not in uploaded_files_map:
+
         uploaded_files_map[user_id] = set()
 
+
+
     uploaded_files_map[user_id].add(filename)
+
+
+
     _persist_user_state(user_id)
 
-    print(
-        f"PDF processed: {filename} "
-        f"({len(documents)} chunks)"
-    )
+
 
     print(
-        "Available PDFs:",
-        uploaded_files_map[user_id]
+
+        f"PDF processed: {filename} "
+
+        f"({len(documents)} chunks)"
+
     )
+
+
+
+    print(
+
+        "Available PDFs:",
+
+        uploaded_files_map[user_id]
+
+    )
+
+
 
     return len(documents)
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _process_pdf_project(pdf_path, source_filename, project_id):
+
     """Project-scoped PDF processing — reuses the same chunking/FAISS pipeline."""
+
+
+
     key = _project_key(project_id)
+
     _load_project_state(project_id)
+
+
 
     reader = PdfReader(pdf_path)
 
+
+
     filename = source_filename or os.path.basename(pdf_path)
 
+
+
     splitter = RecursiveCharacterTextSplitter(
+
         chunk_size=1500,
+
         chunk_overlap=200
+
     )
+
+
 
     documents = []
 
+
+
     for page_number, page in enumerate(reader.pages, start=1):
+
         page_text = page.extract_text()
 
+
+
         if not page_text:
+
             continue
+
+
 
         chunks = splitter.split_text(page_text)
 
-        for chunk in chunks:
+
+
+        for chunk_index, chunk in enumerate(chunks):
+
             documents.append(
+
                 Document(
+
                     page_content=chunk,
+
                     metadata={
+
                         "source": filename,
+
                         "page": page_number,
+
+                        "chunk_id": f"{filename}:page-{page_number}:chunk-{chunk_index}",
+
+                        "chunk_index": chunk_index,
+
+                        "file_type": "pdf",
+
                         "project_id": project_id,
+
+                        "scope": "project",
+
                     }
+
                 )
+
             )
 
-    if not documents:
-        raise ValueError(
-            f"No readable text found in {filename}"
+
+
+    if documents:
+        if key not in project_vector_stores:
+            project_vector_stores[key] = FAISS.from_documents(
+                documents,
+                get_embeddings()
+            )
+        else:
+            project_vector_stores[key].add_documents(documents)
+
+        if key not in project_files_map:
+            project_files_map[key] = set()
+
+        project_files_map[key].add(filename)
+
+        _persist_project_state(project_id)
+
+        print(
+            f"Project PDF processed: {filename} "
+            f"({len(documents)} chunks)"
         )
 
-    if key not in project_vector_stores:
-        project_vector_stores[key] = FAISS.from_documents(documents, get_embeddings())
-    else:
-        project_vector_stores[key].add_documents(documents)
+        return len(documents)
 
-    if key not in project_files_map:
-        project_files_map[key] = set()
-
-    project_files_map[key].add(filename)
-    _persist_project_state(project_id)
-
-    print(f"Project PDF processed: {filename} ({len(documents)} chunks)")
-
-    return len(documents)
-
-
+    return 0
 def process_text_file(file_path, user_id, source_filename=None, project_id=None):
+
+
+
     """Process any plain-text / code file (py, html, js, ts, css, json, csv, md, txt, etc.)"""
+
+
+
     global vector_stores
+
+
+
     global uploaded_files_map
+
+
+
     global project_vector_stores
+
+
+
     global project_files_map
 
+
+
+
+
+
+
     if project_id is not None:
+
+
+
         return _process_text_file_project(file_path, source_filename, project_id)
+
+
+
+
+
+
 
     _load_user_state(user_id)
 
+
+
+
+
+
+
     filename = source_filename or os.path.basename(file_path)
 
+
+
+
+
+
+
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+
+
+
         raw_text = f.read()
 
+
+
+
+
+
+
     if not raw_text.strip():
+
+
+
         raise ValueError(f"No readable text found in {filename}")
 
+
+
+
+
+
+
     splitter = RecursiveCharacterTextSplitter(
+
+
+
         chunk_size=1500,
+
+
+
         chunk_overlap=200
+
+
+
     )
+
+
+
+
+
+
 
     chunks = splitter.split_text(raw_text)
 
+
+
+
+
+
+
+    file_type = _get_file_type(filename)
+
+
+
     documents = [
+
         Document(
+
             page_content=chunk,
+
             metadata={
+
                 "source": filename,
-                "page": i + 1
+
+                "page": i + 1,
+
+                "chunk_id": f"{filename}:{i}",
+
+                "chunk_index": i,
+
+                "file_type": file_type,
+
+                "user_id": user_id,
+
+                "scope": "user",
+
             }
+
         )
+
         for i, chunk in enumerate(chunks)
+
     ]
 
+
+
     if not documents:
+
+
+
         raise ValueError(f"Could not split {filename} into chunks")
 
+
+
+
+
+
+
     if user_id not in vector_stores:
+
+
+
         vector_stores[user_id] = FAISS.from_documents(documents, get_embeddings())
+
+
+
     else:
+
+
+
         vector_stores[user_id].add_documents(documents)
 
+
+
+
+
+
+
     if user_id not in uploaded_files_map:
+
+
+
         uploaded_files_map[user_id] = set()
 
+
+
+
+
+
+
     uploaded_files_map[user_id].add(filename)
+
+
+
     _persist_user_state(user_id)
 
+
+
+
+
+
+
     print(f"Text/code file processed: {filename} ({len(documents)} chunks)")
+
+
+
     print("All uploaded files:", uploaded_files_map[user_id])
 
+
+
+
+
+
+
     return len(documents)
+
+
+
+
+
+
+
+
+
 
 
 def _process_text_file_project(file_path, source_filename, project_id):
+
+
+
     """Project-scoped text/code file processing."""
+
+
+
     key = _project_key(project_id)
+
+
+
     _load_project_state(project_id)
+
+
+
+
+
+
 
     filename = source_filename or os.path.basename(file_path)
 
+
+
+
+
+
+
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+
+
+
         raw_text = f.read()
 
+
+
+
+
+
+
     if not raw_text.strip():
+
+
+
         raise ValueError(f"No readable text found in {filename}")
 
+
+
+
+
+
+
     splitter = RecursiveCharacterTextSplitter(
+
+
+
         chunk_size=1500,
+
+
+
         chunk_overlap=200
+
+
+
     )
+
+
+
+
+
+
 
     chunks = splitter.split_text(raw_text)
 
+
+
+
+
+
+
+    file_type = _get_file_type(filename)
+
+
+
     documents = [
+
         Document(
+
             page_content=chunk,
+
             metadata={
+
                 "source": filename,
+
                 "page": i + 1,
+
+                "chunk_id": f"{filename}:{i}",
+
+                "chunk_index": i,
+
+                "file_type": file_type,
+
                 "project_id": project_id,
+
+                "scope": "project",
+
             }
+
         )
+
         for i, chunk in enumerate(chunks)
+
     ]
 
+
+
     if not documents:
+
+
+
         raise ValueError(f"Could not split {filename} into chunks")
 
+
+
+
+
+
+
     if key not in project_vector_stores:
+
+
+
         project_vector_stores[key] = FAISS.from_documents(documents, get_embeddings())
+
+
+
     else:
+
+
+
         project_vector_stores[key].add_documents(documents)
 
+
+
+
+
+
+
     if key not in project_files_map:
+
+
+
         project_files_map[key] = set()
 
+
+
+
+
+
+
     project_files_map[key].add(filename)
+
+
+
     _persist_project_state(project_id)
 
+
+
+
+
+
+
     print(f"Project text file processed: {filename} ({len(documents)} chunks)")
+
+
+
+
+
+
 
     return len(documents)
 
 
-def search_pdf(
-    question,
-    user_id,
-    chunks_per_pdf=3
+
+
+
+def _rank_rag_results(
+
+    docs_with_scores,
+
+    chunks_per_source=3,
+
 ):
+
+    """
+
+    Rank RAG results by FAISS L2 distance.
+
+
+
+    Lower distance means higher relevance.
+
+    Only the best `chunks_per_source` chunks are kept for each source.
+
+    """
+
+
+
+    if not docs_with_scores:
+
+        return []
+
+
+
+    # Lower L2 distance = more relevant
+
+    ranked = sorted(
+
+        docs_with_scores,
+
+        key=lambda item: item[1],
+
+    )
+
+
+
+    selected = []
+
+    source_counts = {}
+
+
+
+    for doc, score in ranked:
+
+        source = doc.metadata.get("source", "")
+
+
+
+        if not source:
+
+            continue
+
+
+
+        count = source_counts.get(source, 0)
+
+
+
+        if count >= chunks_per_source:
+
+            continue
+
+
+
+        selected.append((doc, score))
+
+        source_counts[source] = count + 1
+
+
+
+    return selected
+
+
+
+
+
+def search_pdf(
+
+
+
+    question,
+
+
+
+    user_id,
+
+
+
+    chunks_per_pdf=3
+
+
+
+):
+
+
+
     global vector_stores
+
+
+
     global uploaded_files_map
+
+
+
+
+
+
 
     _load_user_state(user_id)
 
+
+
+
+
+
+
     if user_id not in vector_stores:
+
+
+
         return None
+
+
+
+
+
+
 
     if user_id not in uploaded_files_map or not uploaded_files_map[user_id]:
+
+
+
         return None
 
+
+
+
+
+
+
     vector_store = vector_stores[user_id]
+
+
+
     uploaded_files = uploaded_files_map[user_id]
+
+
+
+
+
+
 
     context_parts = []
 
+
+
+
+
+
+
     # Tell Gemini which documents exist
+
+
+
     context_parts.append(
+
+
+
         "UPLOADED DOCUMENTS:\n" +
+
+
+
         "\n".join(
+
+
+
             f"- {filename}"
+
+
+
             for filename in sorted(uploaded_files)
+
+
+
         )
+
+
+
     )
 
+
+
+
+
+
+
     # Fetch a broad pool of results without any filter (FAISS in-memory
+
+
+
     # does not reliably support metadata filtering via the filter= kwarg).
+
+
+
     # We then manually filter by source filename in Python.
+
+
+
     total_needed = chunks_per_pdf * len(uploaded_files)
+
+
+
     # Fetch at least 50 candidates so we have enough to distribute across files
+
+
+
     fetch_k = max(total_needed * 4, 50)
 
+
+
+
+
+
+
     try:
+
+
+
         # Use similarity_search_with_score to get L2 distance scores.
+
+
+
         # FAISS uses Euclidean distance: LOWER = more relevant.
+
+
+
         all_docs_with_scores = vector_store.similarity_search_with_score(
+
+
+
             question, k=fetch_k
+
+
+
         )
+
+
+
     except Exception as error:
+
+
+
         print(f"RAG search error: {error}")
+
+
+
         return None
+
+
+
+
+
+
 
     # Apply relevance threshold: reject chunks whose L2 distance exceeds
+
+
+
     # the configured threshold. This prevents weak/unrelated retrieval
+
+
+
     # from being treated as authoritative RAG context.
+
+
+
     filtered_docs = [
-        (doc, score) for doc, score in all_docs_with_scores
+
+        (doc, score)
+
+        for doc, score in all_docs_with_scores
+
         if score <= RAG_RELEVANCE_THRESHOLD
+
     ]
 
+
+
     if not filtered_docs:
-        # No chunks passed the relevance threshold — return None so the
-        # agent falls back to normal chat instead of using weak context.
+
         return None
 
-    # Group results by source filename
+
+
+    # Rank by FAISS distance and limit chunks per source.
+
+    ranked_docs = _rank_rag_results(
+
+        filtered_docs,
+
+        chunks_per_source=chunks_per_pdf,
+
+    )
+
+
+
+    if not ranked_docs:
+
+        return None
+
+
+
     docs_by_file: dict[str, list] = {}
-    for doc, score in filtered_docs:
+
+
+
+    for doc, score in ranked_docs:
+
         source = doc.metadata.get("source", "")
+
+
+
         if source not in docs_by_file:
+
             docs_by_file[source] = []
-        if len(docs_by_file[source]) < chunks_per_pdf:
-            docs_by_file[source].append(doc)
+
+
+
+        docs_by_file[source].append(doc)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     for filename in sorted(uploaded_files):
 
+
+
+
+
+
+
         documents = docs_by_file.get(filename, [])
 
+
+
+
+
+
+
         if not documents:
+
+
+
             continue
 
+
+
+
+
+
+
         context_parts.append(
+
+
+
             f"\n===== DOCUMENT: "
+
+
+
             f"{filename} =====\n"
+
+
+
         )
+
+
+
+
+
+
 
         for doc in documents:
 
+
+
+
+
+
+
             page = doc.metadata.get(
+
+
+
                 "page",
+
+
+
                 "Unknown"
+
+
+
             )
+
+
+
+
+
+
 
             context_parts.append(
+
+
+
                 f"""
+
+
+
 SOURCE: {filename}
+
+
+
 PAGE: {page}
 
+
+
+
+
+
+
 {doc.page_content}
+
+
+
 """
+
+
+
             )
 
+
+
+
+
+
+
     if len(context_parts) <= 1:
+
+
+
         # Only the header, no actual content found
+
+
+
         return None
 
+
+
+
+
+
+
     return "\n\n---\n\n".join(
+
+
+
         context_parts
+
+
+
     )
+
+
+
+
+
+
+
+
+
 
 
 def search_project_pdf(question, project_id, chunks_per_pdf=3):
+
+
+
     """Search project-scoped RAG index. Returns formatted context or None."""
+
+
+
     global project_vector_stores
+
+
+
     global project_files_map
 
+
+
+
+
+
+
     key = _project_key(project_id)
+
+
+
     _load_project_state(project_id)
 
+
+
+
+
+
+
     if key not in project_vector_stores:
+
+
+
         return None
+
+
+
+
+
+
 
     if key not in project_files_map or not project_files_map[key]:
+
+
+
         return None
 
+
+
+
+
+
+
     vector_store = project_vector_stores[key]
+
+
+
     uploaded_files = project_files_map[key]
+
+
+
+
+
+
 
     context_parts = []
 
+
+
+
+
+
+
     context_parts.append(
+
+
+
         "UPLOADED DOCUMENTS:\n" +
+
+
+
         "\n".join(
+
+
+
             f"- {filename}"
+
+
+
             for filename in sorted(uploaded_files)
+
+
+
         )
+
+
+
     )
 
+
+
+
+
+
+
     total_needed = chunks_per_pdf * len(uploaded_files)
+
+
+
     fetch_k = max(total_needed * 4, 50)
 
+
+
+
+
+
+
     try:
+
+
+
         all_docs_with_scores = vector_store.similarity_search_with_score(
+
+
+
             question, k=fetch_k
+
+
+
         )
+
+
+
     except Exception as error:
+
+
+
         print(f"Project RAG search error: {error}")
+
+
+
         return None
+
+
+
+
+
+
 
     filtered_docs = [
-        (doc, score) for doc, score in all_docs_with_scores
+
+        (doc, score)
+
+        for doc, score in all_docs_with_scores
+
         if score <= RAG_RELEVANCE_THRESHOLD
+
     ]
 
+
+
     if not filtered_docs:
+
         return None
+
+
+
+    # Rank by FAISS distance and limit chunks per source.
+
+    ranked_docs = _rank_rag_results(
+
+        filtered_docs,
+
+        chunks_per_source=chunks_per_pdf,
+
+    )
+
+
+
+    if not ranked_docs:
+
+        return None
+
+
 
     docs_by_file: dict[str, list] = {}
-    for doc, score in filtered_docs:
+
+
+
+    for doc, score in ranked_docs:
+
         source = doc.metadata.get("source", "")
+
+
+
         if source not in docs_by_file:
+
             docs_by_file[source] = []
-        if len(docs_by_file[source]) < chunks_per_pdf:
-            docs_by_file[source].append(doc)
 
-    for filename in sorted(uploaded_files):
-        documents = docs_by_file.get(filename, [])
 
-        if not documents:
-            continue
 
-        context_parts.append(
-            f"\n===== PROJECT DOCUMENT: "
-            f"{filename} =====\n"
-        )
+        docs_by_file[source].append(doc)
 
-        for doc in documents:
-            page = doc.metadata.get(
-                "page",
-                "Unknown"
-            )
+
+
+
+
+
+
+        for filename in sorted(uploaded_files):
+
+
+
+            documents = docs_by_file.get(filename, [])
+
+
+
+
+
+
+
+            if not documents:
+
+
+
+                continue
+
+
+
+
+
+
 
             context_parts.append(
-                f"""
-SOURCE: {filename}
-PAGE: {page}
 
-{doc.page_content}
-"""
+
+
+                f"\n===== PROJECT DOCUMENT: "
+
+
+
+                f"{filename} =====\n"
+
+
+
             )
 
-    if len(context_parts) <= 1:
-        return None
 
-    return "\n\n---\n\n".join(context_parts)
+
+
+
+
+
+            for doc in documents:
+
+
+
+                page = doc.metadata.get(
+
+
+
+                    "page",
+
+
+
+                    "Unknown"
+
+
+
+                )
+
+
+
+
+
+
+
+                context_parts.append(
+
+
+
+                    f"""
+
+
+
+    SOURCE: {filename}
+
+
+
+    PAGE: {page}
+
+
+
+
+
+
+
+    {doc.page_content}
+
+
+
+    """
+
+
+
+                )
+
+
+
+
+
+
+
+        if len(context_parts) <= 1:
+
+
+
+            return None
+
+
+
+
+
+
+
+        return "\n\n---\n\n".join(context_parts)
+
+
+
+
+
+
+
+def _get_file_type(filename: str) -> str:
+
+
+
+    """Return a normalized file type from the filename."""
+
+
+
+    suffix = Path(filename).suffix.lower()
+
+
+
+
+
+
+
+    if suffix == ".pdf":
+
+
+
+        return "pdf"
+
+
+
+
+
+
+
+    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".c", ".cpp", ".h", ".hpp"}:
+
+
+
+        return "code"
+
+
+
+
+
+
+
+    if suffix in {".html", ".htm", ".css", ".scss"}:
+
+
+
+        return "web"
+
+
+
+
+
+
+
+    if suffix in {".json", ".yaml", ".yml", ".xml", ".csv"}:
+
+
+
+        return "data"
+
+
+
+
+
+
+
+    if suffix in {".md", ".txt", ".rst"}:
+
+
+
+        return "text"
+
+
+
+
+
+
+
+    return "unknown"
+
+

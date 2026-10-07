@@ -46,6 +46,7 @@ def _obs_block(tool_name: str, status: str, body: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _exec_python(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    from agents.tool_registry import _sanitize_error
     from agents.tools import execute_python
 
     code: str = (args.get("code") or "").strip()
@@ -62,7 +63,19 @@ def _exec_python(args: Dict[str, Any], context: ToolContext) -> ToolResult:
             metadata={"reason": "empty_code"},
         )
 
-    raw = execute_python(code, timeout_seconds=timeout_seconds)
+    try:
+        raw = execute_python(code, timeout_seconds=timeout_seconds)
+    except Exception as exc:  # pragma: no cover - defensive boundary
+        safe = _sanitize_error(exc)
+        logger.exception("python_exec tool failed")
+        return ToolResult(
+            tool_name="python_exec",
+            success=False,
+            error=safe,
+            observation=_obs_block("python_exec", "error", f"Execution failed: {safe}"),
+            metadata={"error_type": type(exc).__name__},
+        )
+
     stdout = raw.get("stdout", "")
     stderr = raw.get("stderr", "")
     exit_code = raw.get("exit_code", -1)
@@ -107,6 +120,7 @@ def _exec_python(args: Dict[str, Any], context: ToolContext) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 def _exec_web_search(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    from agents.tool_registry import _sanitize_error
     from agents.tools import web_search
 
     query: str = args.get("query") or ""
@@ -120,7 +134,18 @@ def _exec_web_search(args: Dict[str, Any], context: ToolContext) -> ToolResult:
             observation=_obs_block("web_search", "error", "No search query was provided."),
         )
 
-    result = web_search(query, max_results=max_results)
+    try:
+        result = web_search(query, max_results=max_results)
+    except Exception as exc:  # pragma: no cover - defensive boundary
+        safe = _sanitize_error(exc)
+        logger.exception("web_search tool failed")
+        return ToolResult(
+            tool_name="web_search",
+            success=False,
+            error=safe,
+            observation=_obs_block("web_search", "error", f"Web search failed: {safe}"),
+            metadata={"error_type": type(exc).__name__},
+        )
     returned = result.get("returned", 0)
     results = result.get("results", [])
 
@@ -197,6 +222,7 @@ def _exec_get_time(args: Dict[str, Any], context: ToolContext) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 def _exec_rag_search(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    from agents.tool_registry import _sanitize_error
     from rag import search_pdf, search_project_pdf
 
     question: str = args.get("query") or ""
@@ -209,15 +235,26 @@ def _exec_rag_search(args: Dict[str, Any], context: ToolContext) -> ToolResult:
             observation=_obs_block("rag_search", "error", "No search query was provided."),
         )
 
-    if context.project_id is not None:
-        context_str = search_project_pdf(question, context.project_id)
-        scope = f"project:{context.project_id}"
-    elif context.user_id is not None:
-        context_str = search_pdf(question, context.user_id)
-        scope = f"user:{context.user_id}"
-    else:
-        context_str = None
-        scope = "none"
+    try:
+        if context.project_id is not None:
+            context_str = search_project_pdf(question, context.project_id)
+            scope = f"project:{context.project_id}"
+        elif context.user_id is not None:
+            context_str = search_pdf(question, context.user_id)
+            scope = f"user:{context.user_id}"
+        else:
+            context_str = None
+            scope = "none"
+    except Exception as exc:
+        safe = _sanitize_error(exc)
+        logger.exception("rag_search tool failed")
+        return ToolResult(
+            tool_name="rag_search",
+            success=False,
+            error=safe,
+            observation=_obs_block("rag_search", "error", f"Document retrieval failed: {safe}"),
+            metadata={"error_type": type(exc).__name__, "scope": "none"},
+        )
 
     if context_str:
         return ToolResult(
@@ -252,26 +289,45 @@ def _exec_rag_search(args: Dict[str, Any], context: ToolContext) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 def _exec_vision(args: Dict[str, Any], context: ToolContext) -> ToolResult:
-    image_path: str = args.get("image_path") or ""
-    prompt: str = args.get("prompt") or "Describe this image."
+    from agents.tool_registry import _sanitize_error
+
+    image_path = args.get("image_path") or ""
+    prompt = args.get("prompt") or "Describe this image."
 
     if not image_path:
         return ToolResult(
             tool_name="vision",
             success=False,
             error="No image_path provided.",
-            observation=_obs_block("vision", "error", "No image path was provided."),
+            observation=_obs_block(
+                "vision",
+                "error",
+                "No image path was provided.",
+            ),
         )
 
-    from vision import analyze_image
+    try:
+        from vision import analyze_image
+        answer = analyze_image(image_path, prompt)
+    except Exception as exc:
+        safe = _sanitize_error(exc)
+        logger.exception("vision tool failed")
+        return ToolResult(
+            tool_name="vision",
+            success=False,
+            error=safe,
+            observation=_obs_block("vision", "error", f"Image analysis failed: {safe}"),
+            metadata={"error_type": type(exc).__name__},
+        )
 
-    answer = analyze_image(image_path, prompt)
     return ToolResult(
         tool_name="vision",
         success=True,
         output=answer,
         observation=_obs_block(
-            "vision", "success", f"Image analysis (prompt={prompt!r}):\n\n{answer}"
+            "vision",
+            "success",
+            f"Image analysis (prompt={prompt!r}):\n\n{answer}",
         ),
     )
 
@@ -281,6 +337,8 @@ def _exec_vision(args: Dict[str, Any], context: ToolContext) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 def _exec_image_gen(args: Dict[str, Any], context: ToolContext) -> ToolResult:
+    from agents.tool_registry import _sanitize_error
+
     prompt: str = args.get("prompt") or ""
     aspect_ratio: str = args.get("aspect_ratio") or "1:1"
 
@@ -307,7 +365,18 @@ def _exec_image_gen(args: Dict[str, Any], context: ToolContext) -> ToolResult:
             ),
         )
 
-    image_b64 = generate_image(prompt, aspect_ratio)
+    try:
+        image_b64 = generate_image(prompt, aspect_ratio)
+    except Exception as exc:
+        safe = _sanitize_error(exc)
+        logger.exception("image_gen tool failed")
+        return ToolResult(
+            tool_name="image_gen",
+            success=False,
+            error=safe,
+            observation=_obs_block("image_gen", "error", f"Image generation failed: {safe}"),
+            metadata={"error_type": type(exc).__name__},
+        )
     result_md = f"![Generated Image](data:image/png;base64,{image_b64})"
     return ToolResult(
         tool_name="image_gen",
@@ -325,27 +394,7 @@ def _exec_image_gen(args: Dict[str, Any], context: ToolContext) -> ToolResult:
 # Registry wiring
 # ---------------------------------------------------------------------------
 
-def _python_tool() -> Tool:
-    # requires_confirmation=False: the AST sandbox (no imports, blocked
-    # names, subprocess timeout, stripped env) already neutralises the danger,
-    # so a math/word-problem turn returns a direct answer without an extra
-    # approval round-trip (preserving the existing Agent contract).
-    return Tool(
-        name="python_exec",
-        description=(
-            "Execute safe Python code in a sandboxed subprocess. "
-            "No imports, no filesystem/network access, no dangerous builtins."
-        ),
-        category="runtime",
-        input_schema={
-            "code": {"type": "string", "description": "Python code to execute.", "required": True},
-            "timeout_seconds": {"type": "integer", "description": "Hard timeout in seconds.", "required": False},
-        },
-        requires_confirmation=False,
-        risk_level=RiskLevel.HIGH,
-        timeout_seconds=30,
-        executor=_exec_python,
-    )
+
 
 
 def _web_search_tool() -> Tool:
@@ -395,21 +444,62 @@ def _rag_search_tool() -> Tool:
     )
 
 
+def _python_tool() -> Tool:
+    # requires_confirmation=False: the AST sandbox (no imports, blocked
+    # names, subprocess timeout, stripped env) already neutralises the danger,
+    # so a math/word-problem turn returns a direct answer without an extra
+    # approval round-trip (preserving the existing Agent contract).
+    return Tool(
+        name="python_exec",
+        description=(
+            "Execute safe Python code in a sandboxed subprocess. "
+            "No imports, no filesystem/network access, no dangerous builtins."
+        ),
+        category="runtime",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute.",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Execution timeout in seconds.",
+                },
+            },
+            "required": ["code"],
+        },
+        requires_confirmation=False,
+        risk_level=RiskLevel.HIGH,
+        timeout_seconds=30,
+        executor=_exec_python,
+    )
+    
 def _vision_tool() -> Tool:
     return Tool(
         name="vision",
         description="Analyze an image file and return a text description.",
         category="runtime",
         input_schema={
-            "image_path": {"type": "string", "description": "Path to the image file.", "required": True},
-            "prompt": {"type": "string", "description": "Instruction for the vision model.", "required": False},
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "Path to the image file.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Instruction for the vision model.",
+                },
+            },
+            "required": ["image_path"],
         },
         requires_confirmation=False,
         risk_level=RiskLevel.MEDIUM,
         timeout_seconds=60,
         executor=_exec_vision,
     )
-
 
 def _image_gen_tool() -> Tool:
     return Tool(

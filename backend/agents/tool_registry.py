@@ -3,18 +3,18 @@
 This module defines the *contracts* only:
 
   - ``Tool``        — declarative metadata for a tool
-                      (name, description, category, input_schema,
-                      requires_confirmation, risk_level, timeout_seconds,
-                      executor).
+                       (name, description, category, input_schema,
+                       requires_confirmation, risk_level, timeout_seconds,
+                       executor).
   - ``ToolResult``  — structured result contract returned by every tool
-                      (tool_name, success, output, error, observation,
-                      metadata, timed_out).
+                       (tool_name, success, output, error, observation,
+                       metadata, timed_out).
   - ``ToolContext`` — per-request execution context (user_id, chat_id,
-                      project_id, trace_id) used for isolation.
+                       project_id, trace_id) used for isolation.
   - ``ToolError``   — raised by the registry for unknown / refused tools.
   - ``RiskLevel``   — low / medium / high classification.
   - ``ToolRegistry``— register / get / list / execute with confirmation
-                      and timeout enforcement.
+                       and timeout enforcement.
 
 Concrete tool implementations live in ``tool_implementations.py`` and wrap
 the existing, battle-tested functions in ``agents.tools`` / ``rag`` /
@@ -23,6 +23,7 @@ the existing, battle-tested functions in ``agents.tools`` / ``rag`` /
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -125,10 +126,29 @@ class ToolRequest:
 
 
 class ToolRegistry:
-    """Registers tools and executes them in a controlled way."""
+    """Registers tools and executes them in a controlled way with timeout enforcement."""
+
+    # Shared thread pool for timeout enforcement across all registry instances
+    _executor_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
+
+    @classmethod
+    def _get_pool(cls) -> concurrent.futures.ThreadPoolExecutor:
+        """Get or create the shared thread pool for timeout enforcement."""
+        if cls._executor_pool is None:
+            cls._executor_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=8, thread_name_prefix="mygpt-tool-"
+            )
+        return cls._executor_pool
+
+    @classmethod
+    def shutdown_pool(cls, wait: bool = True) -> None:
+        """Shutdown the shared thread pool (for testing/cleanup)."""
+        if cls._executor_pool is not None:
+            cls._executor_pool.shutdown(wait=wait)
+            cls._executor_pool = None
 
     # -- registration --------------------------------------------------------
 
@@ -182,7 +202,7 @@ class ToolRegistry:
         context: Optional[ToolContext] = None,
         allow_pending: bool = False,
     ) -> ToolResult:
-        """Execute a registered tool.
+        """Execute a registered tool with timeout enforcement.
 
         ``allow_pending`` — when False (default) tools that require
         confirmation return a refused result instead of running.  Set it
@@ -243,17 +263,16 @@ class ToolRegistry:
             context.project_id,
         )
 
+        # Execute with centralized timeout enforcement
+        pool = self._get_pool()
+        future = pool.submit(tool.executor, arguments, context)
+
         try:
-            result = tool.executor(arguments, context)
-        except ToolError as exc:
-            return ToolResult(
-                tool_name=name,
-                success=False,
-                error=str(exc),
-                observation=f"[TOOL_ERROR] {exc}",
-                metadata={"error_type": "ToolError"},
-            )
-        except TimeoutError:
+            result = future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Cancel the future to prevent it from continuing in background
+            future.cancel()
+            logger.warning("Tool %s timed out after %ss (enforced by registry)", name, timeout)
             return ToolResult(
                 tool_name=name,
                 success=False,
@@ -262,7 +281,15 @@ class ToolRegistry:
                 observation=(
                     f"[TOOL_ERROR] '{name}' timed out after {timeout} seconds."
                 ),
-                metadata={"timed_out": True},
+                metadata={"timed_out": True, "timeout_enforced_by": "registry"},
+            )
+        except ToolError as exc:
+            return ToolResult(
+                tool_name=name,
+                success=False,
+                error=str(exc),
+                observation=f"[TOOL_ERROR] {exc}",
+                metadata={"error_type": "ToolError"},
             )
         except RecursionError:
             return ToolResult(

@@ -368,7 +368,7 @@ class TestVision:
         img.save(buf, format="PNG")
         buf.seek(0)
 
-        with patch("app.analyze_image", return_value="A red image"):
+        with patch("vision.analyze_image", return_value="A red image"):
             resp = client.post(
                 "/vision",
                 files={"file": ("test.png", buf, "image/png")},

@@ -27,6 +27,12 @@ from vision import analyze_image
 from database import *
 from models import *
 from agents.agent import Agent
+from agents.tool_registry import ToolContext
+from agents.tool_implementations import get_tool_registry
+from agents.tool_validator import validate_tool_request
+from agents.tool_permissions import evaluate_tool_permission
+from agents.result_collector import ResultCollector
+from agents.result_verifier import verify_tool_result
 from auth import get_current_user, verify_chat_ownership, JWT_SECRET_KEY, JWT_ALGORITHM
 from llm import (
     ask_llm,
@@ -408,113 +414,125 @@ def new_chat(user_id: int = Depends(get_current_user)):
 
 @app.post("/chat")
 def chat(request: Request, data: ChatRequest, user_id: int = Depends(get_current_user), _rl: None = chat_rate_limit):
-
-    verify_chat_ownership(data.chat_id, user_id)
-    project_id = get_conversation_project_id(data.chat_id)
-    trace_id = getattr(request.state, "trace_id", None)
-    provider_name, provider_model = get_routed_provider_metadata()
-    _log_chat_phase(
-        trace_id,
-        "request_validated",
-        user_id_present=user_id is not None,
-        chat_id_present=data.chat_id is not None,
-        message_length=len(data.message),
-        message_hash=_message_diagnostic(data.message),
-        provider=provider_name,
-        model=provider_model,
-    )
-
-    save_message(data.chat_id, "user", data.message)
-    _log_chat_phase(trace_id, "user_persisted_before_agent", user_message_persisted=True)
-
-    perf = create_context("chat", provider_name or "unknown", provider_model or OLLAMA_MODEL)
-    perf.rag_used = False
-
-    result = agent.run(
-        data.message,
-        data.chat_id,
-        user_id,
-        project_id=project_id,
-    )
-    _log_chat_phase(
-        trace_id,
-        "agent_complete",
-        action=result.get("action"),
-        history_count=len(result.get("history") or []),
-        memory_count=len(result.get("memories") or []),
-        rag_result_count=1 if result.get("context") else 0,
-        contextual_mode=bool(result.get("context")),
-        prompt_has_current_message=data.message in result.get("prompt", ""),
-        prompt_has_history=bool(result.get("history")),
-        provider=provider_name,
-        model=provider_model,
-    )
-    perf.rag_used = result.get("context") is not None
-
-    # Smart per-request generation limit based on action and message content.
-    action = result.get("action", "chat")
-    num_predict = get_num_predict(action, data.message)
-
-    if result.get("answer"):
-        answer = result["answer"]
-    else:
-        try:
-            answer = ask_llm_routed(result["prompt"], action, perf_context=perf, num_predict=num_predict)
-        except LLMError as e:
-            perf.add_error(e.kind)
-            perf.emit()
-            # For current_info failures, return the retrieved search results
-            if e.kind == "current_info_failed":
-                tool_results = result.get("tool_results")
-                if tool_results and "CURRENT INFORMATION SEARCH RESULTS" in tool_results:
-                    answer = f"⚠️ {e.user_message}\n\n**Retrieved Search Results:**\n{tool_results}"
-                else:
-                    answer = f"⚠️ {e.user_message}"
-            else:
-                raise HTTPException(
-                    status_code=e.status_code,
-                    detail={
-                        "error": True,
-                        "code": e.kind,
-                        "message": "LLM request failed.",
-                        "retry_after_seconds": e.retry_after,
-                    },
-                )
-
-    if not answer or not answer.strip():
-        answer = (
-            "⚠️ I couldn't generate an answer for this request. "
-            "Please try again."
+    try:
+        verify_chat_ownership(data.chat_id, user_id)
+        project_id = get_conversation_project_id(data.chat_id)
+        trace_id = getattr(request.state, "trace_id", None)
+        provider_name, provider_model = get_routed_provider_metadata()
+        _log_chat_phase(
+            trace_id,
+            "request_validated",
+            user_id_present=user_id is not None,
+            chat_id_present=data.chat_id is not None,
+            message_length=len(data.message),
+            message_hash=_message_diagnostic(data.message),
+            provider=provider_name,
+            model=provider_model,
         )
-    perf.output_length = len(answer)
 
-    # Verify RAG answers against retrieved context
-    if action == "rag" and result.get("context"):
-        is_safe = is_answer_safe_for_context(answer, result["context"], data.message)
-        if not is_safe:
-            # Fallback: provide a safe answer based only on context
-            answer = f"Based on the uploaded document, I can see the code defines functions and variables. The exact output would require executing the code. The document shows: {result['context'][:500]}..."
+        save_message(data.chat_id, "user", data.message)
+        _log_chat_phase(trace_id, "user_persisted_before_agent", user_message_persisted=True)
 
-    if action in ("current_info", "web_research"):
-        answer = _enforce_current_info_grounding(answer, result.get("tool_results"))
+        perf = create_context("chat", provider_name or "unknown", provider_model or OLLAMA_MODEL)
+        perf.rag_used = False
 
-    perf.emit()
+        result = agent.run(
+            data.message,
+            data.chat_id,
+            user_id,
+            project_id=project_id,
+        )
+        _log_chat_phase(
+            trace_id,
+            "agent_complete",
+            action=result.get("action"),
+            history_count=len(result.get("history") or []),
+            memory_count=len(result.get("memories") or []),
+            rag_result_count=1 if result.get("context") else 0,
+            contextual_mode=bool(result.get("context")),
+            prompt_has_current_message=data.message in result.get("prompt", ""),
+            prompt_has_history=bool(result.get("history")),
+            provider=provider_name,
+            model=provider_model,
+        )
+        perf.rag_used = result.get("context") is not None
 
-    save_message(
-        data.chat_id,
-        "assistant",
-        answer
-    )
-    _log_chat_phase(
-        trace_id,
-        "assistant_persisted",
-        assistant_message_persisted=True,
-        response_status=200,
-    )
+        action = result.get("action", "chat")
+        num_predict = get_num_predict(action, data.message)
 
-    return {
-        "answer": answer
-    }
+        if result.get("answer"):
+            answer = result["answer"]
+        else:
+            try:
+                answer = ask_llm_routed(result["prompt"], action, perf_context=perf, num_predict=num_predict)
+            except LLMError as e:
+                perf.add_error(e.kind)
+                perf.emit()
+                if e.kind == "current_info_failed":
+                    tool_results = result.get("tool_results")
+                    if tool_results and "CURRENT INFORMATION SEARCH RESULTS" in tool_results:
+                        answer = f"⚠️ {e.user_message}\n\n**Retrieved Search Results:**\n{tool_results}"
+                    else:
+                        answer = f"⚠️ {e.user_message}"
+                else:
+                    raise HTTPException(
+                        status_code=e.status_code,
+                        detail={
+                            "error": True,
+                            "code": e.kind,
+                            "message": "LLM request failed.",
+                            "retry_after_seconds": e.retry_after,
+                        },
+                    )
+
+        if not answer or not answer.strip():
+            answer = (
+                "⚠️ I couldn't generate an answer for this request. "
+                "Please try again."
+            )
+        perf.output_length = len(answer)
+
+        if action == "rag" and result.get("context"):
+            is_safe = is_answer_safe_for_context(answer, result["context"], data.message)
+            if not is_safe:
+                answer = f"Based on the uploaded document, I can see the code defines functions and variables. The exact output would require executing the code. The document shows: {result['context'][:500]}..."
+
+        if action in ("current_info", "web_research"):
+            answer = _enforce_current_info_grounding(answer, result.get("tool_results"))
+
+        perf.emit()
+
+        save_message(
+            data.chat_id,
+            "assistant",
+            answer
+        )
+        _log_chat_phase(
+            trace_id,
+            "assistant_persisted",
+            assistant_message_persisted=True,
+            response_status=200,
+        )
+
+        return {
+            "answer": answer
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Chat request failed for chat_id=%s user_id=%s",
+            getattr(data, "chat_id", None),
+            user_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": True,
+                "code": "request_failed",
+                "message": "Request failed. Please try again later.",
+            },
+        )
 @app.get("/history/{chat_id}")
 def history(chat_id: int, user_id: int = Depends(get_current_user)):
 
@@ -764,8 +782,66 @@ def vision(
                 detail="Invalid or corrupt image file.",
             )
 
-        answer = analyze_image(file_path, prompt)
-        return {"answer": answer}
+        tool_registry = get_tool_registry()
+
+        tool_args = {
+            "image_path": file_path,
+            "prompt": prompt,
+        }
+
+        valid, validation_error = validate_tool_request(
+            tool_registry,
+            "vision",
+            tool_args,
+        )
+
+        if not valid:
+            raise HTTPException(
+                status_code=400,
+                detail=validation_error,
+            )
+
+        permission = evaluate_tool_permission(
+            tool_registry,
+            "vision",
+            user_confirmed=False,
+        )
+
+        if not permission.allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=permission.reason or "Vision tool permission denied.",
+            )
+
+        tool_context = ToolContext(
+            user_id=user_id,
+            chat_id=None,
+            project_id=None,
+        )
+
+        vision_result = tool_registry.execute(
+            "vision",
+            tool_args,
+            tool_context,
+        )
+
+        collector = ResultCollector()
+        collected_result = collector.collect(vision_result)
+
+        verification = verify_tool_result(collected_result)
+
+        if not verification.valid:
+            raise HTTPException(
+                status_code=500,
+                detail=verification.reason or "Vision result verification failed.",
+            )
+
+        return {
+            "answer": collected_result.output,
+            "tool": "vision",
+            "status": "success",
+        }
+        
     except LLMError as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -808,14 +884,14 @@ def generate_image(
             "prompt": prompt,
             "aspect_ratio": aspect_ratio
         }
-    except Exception as e:
-        logger.exception("Image generation failed")
+    except Exception:
+        logger.exception("Image generation failed for user_id=%s", user_id)
         raise HTTPException(
             status_code=500,
             detail={
                 "error": True,
                 "code": "image_generation_failed",
-                "message": f"Image generation failed: {str(e)}",
+                "message": "Image generation failed. Please try again later.",
             },
         )
 
